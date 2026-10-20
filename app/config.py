@@ -39,7 +39,7 @@ class Settings(BaseSettings):
 
     # LLM Provider Configuration
     LLM_PROVIDER: Literal["gemini", "openai", "anthropic"] = "gemini"
-    LLM_MODEL: str = "gemini-2.5-flash"
+    LLM_MODEL: str = "gemini-3.8-flash"
     GEMINI_API_KEY: str = ""
     GOOGLE_API_KEY: str = ""
     OPENAI_API_KEY: str = ""

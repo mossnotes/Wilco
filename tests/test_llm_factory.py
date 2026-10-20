@@ -6,7 +6,7 @@ from app.browser.llm import get_llm
 
 def test_llm_config_defaults():
     assert settings.LLM_PROVIDER == "gemini"
-    assert settings.LLM_MODEL == "gemini-2.5-flash"
+    assert settings.LLM_MODEL == "gemini-3.8-flash"
 
 
 def test_effective_gemini_api_key(monkeypatch):

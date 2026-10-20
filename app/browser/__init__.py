@@ -1,3 +1,4 @@
+from app.browser.agent import create_agent
 from app.browser.context import (
     browser_session_context,
     create_browser,
@@ -6,6 +7,7 @@ from app.browser.context import (
 from app.browser.llm import get_llm
 
 __all__ = [
+    "create_agent",
     "create_browser",
     "browser_session_context",
     "get_browser_cdp_url",
