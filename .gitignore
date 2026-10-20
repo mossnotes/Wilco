@@ -16,12 +16,8 @@ plan.md
 # Learning
 learning/
 
-# Environment variables & secrets
-.env
-*.env
-
-# Testing & cache
-.pytest_cache/
+#Implementation
+implementation/
 
 # Environment variables & secrets
 .env
