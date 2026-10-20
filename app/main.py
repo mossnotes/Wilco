@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from app.config import settings
 from app.api import api_router
 from app.bot.setup import get_bot, get_dispatcher
+from app.db.engine import close_db, init_db
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
@@ -23,6 +24,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     and graceful session cleanup on shutdown.
     """
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION} (mode={settings.BOT_MODE})")
+    try:
+        await init_db()
+        logger.info("Database tables initialized successfully.")
+    except Exception as exc:
+        logger.error(f"Error during database initialization: {exc}")
     bot = get_bot()
     dp = get_dispatcher()
     polling_task = None
@@ -72,6 +78,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 logger.info("Telegram bot HTTP session closed.")
             except Exception as exc:
                 logger.error(f"Error closing bot session: {exc}")
+
+        try:
+            await close_db()
+            logger.info("Database connection pools closed.")
+        except Exception as exc:
+            logger.error(f"Error closing database connections: {exc}")
 
 
 app = FastAPI(
