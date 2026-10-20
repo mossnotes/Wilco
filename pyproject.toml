@@ -6,10 +6,16 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "aiogram>=3.31.0",
+    "aiosqlite>=0.20.0",
+    "asyncpg>=0.30.0",
     "browser-use>=0.13.9",
+    "cryptography>=43.0.0",
     "fastapi>=0.148.0",
+    "jinja2>=3.1.5",
     "playwright>=1.64.0",
     "pydantic-settings>=2.16.0",
+    "pyotp>=2.9.0",
+    "sqlalchemy>=2.0.36",
     "uvicorn[standard]>=0.54.0",
 ]
 

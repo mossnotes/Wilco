@@ -1,3 +1,4 @@
+import base64
 from typing import Any, Literal
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,6 +24,45 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return v.lower() in ("true", "1", "yes", "t", "dev", "debug")
         return bool(v)
+
+    # Database Settings
+    DATABASE_URL: str = "sqlite+aiosqlite:///./wilco.db"
+
+    # Cryptographic Vault Settings
+    VAULT_MASTER_KEY: str = ""
+
+    # Companion Web App Settings
+    COMPANION_BASE_URL: str = "http://localhost:8000/companion"
+    COMPANION_TOKEN_TTL_MINUTES: int = 10
+
+    # Concurrency & Execution Limits
+    MAX_CONCURRENT_BROWSERS: int = 2
+    TASK_TIMEOUT_SECONDS: int = 300
+
+    @field_validator("VAULT_MASTER_KEY")
+    @classmethod
+    def validate_vault_master_key(cls, v: str) -> str:
+        key = v.strip()
+        if not key:
+            return ""
+        try:
+            decoded = base64.b64decode(key, validate=True)
+            if len(decoded) != 32:
+                raise ValueError(
+                    f"VAULT_MASTER_KEY must decode to exactly 32 bytes (256 bits), got {len(decoded)} bytes"
+                )
+        except Exception as e:
+            if isinstance(e, ValueError) and "32 bytes" in str(e):
+                raise
+            raise ValueError(f"VAULT_MASTER_KEY is not valid base64: {e}") from e
+        return key
+
+    @property
+    def vault_key_bytes(self) -> bytes:
+        """Returns the decoded 32-byte master key for AES-256-GCM operations."""
+        if not self.VAULT_MASTER_KEY or not self.VAULT_MASTER_KEY.strip():
+            raise ValueError("VAULT_MASTER_KEY is not configured in settings")
+        return base64.b64decode(self.VAULT_MASTER_KEY.strip())
 
     # Telegram Bot Settings
     TELEGRAM_BOT_TOKEN: str = ""

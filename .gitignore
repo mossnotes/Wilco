@@ -9,13 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
-plans/
-
-# Learning
-learning/
-
-#Implementation
-implementation/
+# docs
+docs/
 
 # Environment variables & secrets
 .env
