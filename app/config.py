@@ -31,6 +31,19 @@ class Settings(BaseSettings):
     TELEGRAM_WEBHOOK_SECRET: str = ""
     WEBHOOK_PATH: str = "/webhook/telegram"
 
+    # Browser Engine Settings
+    BROWSER_TYPE: Literal["local", "browserbase"] = "local"
+    BROWSER_HEADLESS: bool = True
+    BROWSERBASE_API_KEY: str = ""
+    BROWSERBASE_PROJECT_ID: str = ""
+
+    @field_validator("BROWSER_HEADLESS", mode="before")
+    @classmethod
+    def parse_headless_value(cls, v: Any) -> bool:
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "t")
+        return bool(v)
+
     @property
     def is_bot_configured(self) -> bool:
         return bool(self.TELEGRAM_BOT_TOKEN and self.TELEGRAM_BOT_TOKEN.strip() and self.TELEGRAM_BOT_TOKEN != "your_bot_token_here")
