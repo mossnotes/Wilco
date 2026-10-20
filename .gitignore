@@ -9,9 +9,7 @@ wheels/
 # Virtual environments
 .venv
 
-# Step files
-Steps/
-plan.md
+plans/
 
 # Learning
 learning/

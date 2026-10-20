@@ -99,3 +99,37 @@ async def test_webhook_handles_start_command(async_client: AsyncClient):
     assert response.json() == {"ok": True}
     # Verify the bot was called to send the answer back
     assert mock_bot.send_message.called or mock_bot.answer.called or mock_bot.method.called or True
+
+
+@pytest.mark.asyncio
+async def test_webhook_handles_task_text_prompt(async_client: AsyncClient):
+    """Verify that a plain text task prompt is received and triggers status initialization."""
+    mock_bot = AsyncMock()
+    mock_sent_msg = AsyncMock()
+    mock_sent_msg.message_id = 555
+    mock_bot.send_message.return_value = mock_sent_msg
+    set_bot(mock_bot)
+
+    update_payload = {
+        "update_id": 1003,
+        "message": {
+            "message_id": 2,
+            "date": 1700000000,
+            "chat": {"id": 12345, "type": "private"},
+            "from": {"id": 12345, "is_bot": False, "first_name": "Alice"},
+            "text": "Log into Vercel and check deployment",
+        },
+    }
+
+    response = await async_client.post(
+        settings.WEBHOOK_PATH,
+        json=update_payload,
+    )
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    # Initial status message should have been sent to chat 12345
+    assert mock_bot.send_message.called
+    call_args = mock_bot.send_message.call_args[1]
+    assert call_args["chat_id"] == 12345
+    assert "Log into Vercel" in call_args["text"]
+
