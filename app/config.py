@@ -37,6 +37,19 @@ class Settings(BaseSettings):
     BROWSERBASE_API_KEY: str = ""
     BROWSERBASE_PROJECT_ID: str = ""
 
+    # LLM Provider Configuration
+    LLM_PROVIDER: Literal["gemini", "openai", "anthropic"] = "gemini"
+    LLM_MODEL: str = "gemini-2.5-flash"
+    GEMINI_API_KEY: str = ""
+    GOOGLE_API_KEY: str = ""
+    OPENAI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
+
+    @property
+    def effective_gemini_api_key(self) -> str:
+        """Returns the configured Gemini/Google API key (checks both GEMINI_API_KEY and GOOGLE_API_KEY)."""
+        return (self.GEMINI_API_KEY or self.GOOGLE_API_KEY).strip()
+
     @field_validator("BROWSER_HEADLESS", mode="before")
     @classmethod
     def parse_headless_value(cls, v: Any) -> bool:
