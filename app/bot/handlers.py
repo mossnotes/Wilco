@@ -6,6 +6,7 @@ from aiogram.types import Message
 
 from app.tasks.state import TaskRecord, TaskState
 from app.bot.status_manager import StatusManager
+from app.browser import run_browser_task
 
 logger = logging.getLogger(__name__)
 router = Router(name="main_router")
@@ -138,5 +139,6 @@ async def handle_text_message(message: Message) -> None:
     await status_manager.send_initial(task)
 
     # 4. Launch the task execution in a non-blocking background task
-    # This frees the webhook handler to return 200 OK to Telegram immediately!
-    asyncio.create_task(_run_simulated_task_lifecycle(task, status_manager))
+    # This runs the live browser-use agent and streams step-by-step progress
+    # while freeing the webhook handler to return 200 OK to Telegram immediately!
+    asyncio.create_task(run_browser_task(task, status_manager, message.bot))

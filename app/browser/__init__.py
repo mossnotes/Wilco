@@ -5,6 +5,7 @@ from app.browser.context import (
     get_browser_cdp_url,
 )
 from app.browser.llm import get_llm
+from app.browser.runner import run_browser_task
 
 __all__ = [
     "create_agent",
@@ -12,4 +13,5 @@ __all__ = [
     "browser_session_context",
     "get_browser_cdp_url",
     "get_llm",
+    "run_browser_task",
 ]

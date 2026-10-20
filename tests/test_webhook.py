@@ -1,9 +1,16 @@
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
 from app.config import settings
 from app.bot.setup import set_bot
+
+
+@pytest.fixture(autouse=True)
+def mock_run_browser_task():
+    """Prevent webhook tests from spawning real browser-use runs."""
+    with patch("app.bot.handlers.run_browser_task", new_callable=AsyncMock) as mock_task:
+        yield mock_task
 
 
 @pytest.mark.asyncio
@@ -121,15 +128,18 @@ async def test_webhook_handles_task_text_prompt(async_client: AsyncClient):
         },
     }
 
-    response = await async_client.post(
-        settings.WEBHOOK_PATH,
-        json=update_payload,
-    )
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
-    # Initial status message should have been sent to chat 12345
-    assert mock_bot.send_message.called
-    call_args = mock_bot.send_message.call_args[1]
-    assert call_args["chat_id"] == 12345
-    assert "Log into Vercel" in call_args["text"]
+    with patch("app.bot.handlers.run_browser_task", new_callable=AsyncMock) as mock_run_task:
+        response = await async_client.post(
+            settings.WEBHOOK_PATH,
+            json=update_payload,
+        )
+        assert response.status_code == 200
+        assert response.json() == {"ok": True}
+        # Initial status message should have been sent to chat 12345
+        assert mock_bot.send_message.called
+        call_args = mock_bot.send_message.call_args[1]
+        assert call_args["chat_id"] == 12345
+        assert "Log into Vercel" in call_args["text"]
+        # Background browser task was spawned
+        mock_run_task.assert_called_once()
 
