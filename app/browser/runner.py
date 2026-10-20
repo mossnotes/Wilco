@@ -1,21 +1,25 @@
+import base64
 import html
 import logging
-from typing import Optional
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional
 
 from aiogram import Bot
 from aiogram.types import BufferedInputFile
 
 from app.browser.agent import create_agent
 from app.browser.context import browser_session_context
-from app.bot.status_manager import StatusManager
 from app.tasks.state import TaskRecord, TaskState
+
+if TYPE_CHECKING:
+    from app.bot.status_manager import StatusManager
 
 logger = logging.getLogger(__name__)
 
 
 async def run_browser_task(
     task: TaskRecord,
-    status_manager: StatusManager,
+    status_manager: Any,
     bot: Bot,
     max_steps: int = 25,
 ) -> None:
@@ -79,12 +83,40 @@ async def run_browser_task(
             )
             await status_manager.update(task)
 
-            # 4. Capture screenshot proof
+            # 4. Capture screenshot proof using resilient fallback strategies
             screenshot_bytes: Optional[bytes] = None
+
+            # Strategy A: Take full-page screenshot directly via active browser session
             try:
                 screenshot_bytes = await browser.take_screenshot(full_page=True)
+                logger.info("Captured full-page screenshot via browser CDP")
             except Exception as ss_err:
-                logger.warning("Failed to capture screenshot evidence: %s", ss_err)
+                logger.debug("Direct browser screenshot attempt failed: %s", ss_err)
+
+            # Strategy B: Fallback to history screenshot paths (saved to disk during execution)
+            if not screenshot_bytes and hasattr(history, "screenshot_paths"):
+                try:
+                    paths = history.screenshot_paths(return_none_if_not_screenshot=False)
+                    if paths and paths[-1]:
+                        path_obj = Path(paths[-1])
+                        if path_obj.exists():
+                            screenshot_bytes = path_obj.read_bytes()
+                            logger.info("Retrieved screenshot evidence from history path: %s", path_obj)
+                except Exception as path_err:
+                    logger.debug("Failed reading screenshot from history path: %s", path_err)
+
+            # Strategy C: Fallback to history base64 screenshots
+            if not screenshot_bytes and hasattr(history, "screenshots"):
+                try:
+                    b64_list = history.screenshots(return_none_if_not_screenshot=False)
+                    if b64_list and b64_list[-1]:
+                        screenshot_bytes = base64.b64decode(b64_list[-1])
+                        logger.info("Decoded screenshot evidence from history base64 data")
+                except Exception as b64_err:
+                    logger.debug("Failed decoding screenshot from history base64: %s", b64_err)
+
+            if not screenshot_bytes:
+                logger.warning("No screenshot evidence could be captured for task %s", task.task_id)
 
             # 5. Extract final text result
             result_text = history.final_result() or "Task completed, but no text result was returned."

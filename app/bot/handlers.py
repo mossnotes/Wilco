@@ -6,7 +6,7 @@ from aiogram.types import Message
 
 from app.tasks.state import TaskRecord, TaskState
 from app.bot.status_manager import StatusManager
-from app.browser import run_browser_task
+from app.browser.runner import run_browser_task
 
 logger = logging.getLogger(__name__)
 router = Router(name="main_router")

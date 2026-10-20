@@ -22,22 +22,27 @@ def get_browser_cdp_url() -> Optional[str]:
 def create_browser(
     headless: Optional[bool] = None,
     cdp_url: Optional[str] = None,
+    keep_alive: bool = True,
 ) -> Browser:
     """
     Instantiates a configured BrowserSession.
     Supports local Chromium or remote CDP (Browserbase).
+    
+    Sets keep_alive=True so that agent.run() does not prematurely kill
+    the browser session and CDP client before verification and screenshots.
     """
     is_headless = headless if headless is not None else settings.BROWSER_HEADLESS
     remote_cdp = cdp_url or get_browser_cdp_url()
 
     if remote_cdp:
-        logger.info("Initializing Browser via remote CDP endpoint")
-        return Browser(cdp_url=remote_cdp)
+        logger.info("Initializing Browser via remote CDP endpoint (keep_alive=%s)", keep_alive)
+        return Browser(cdp_url=remote_cdp, keep_alive=keep_alive)
 
-    logger.info("Initializing local Browser (headless=%s)", is_headless)
+    logger.info("Initializing local Browser (headless=%s, keep_alive=%s)", is_headless, keep_alive)
     return Browser(
         headless=is_headless,
         is_local=True,
+        keep_alive=keep_alive,
     )
 
 

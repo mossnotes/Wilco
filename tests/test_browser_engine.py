@@ -36,6 +36,7 @@ def test_create_browser_local(monkeypatch):
         mock_browser_cls.assert_called_once_with(
             headless=True,
             is_local=True,
+            keep_alive=True,
         )
 
 
@@ -47,7 +48,8 @@ def test_create_browser_browserbase(monkeypatch):
     with patch("app.browser.context.Browser") as mock_browser_cls:
         create_browser()
         mock_browser_cls.assert_called_once_with(
-            cdp_url="wss://connect.browserbase.com?apiKey=bb-key"
+            cdp_url="wss://connect.browserbase.com?apiKey=bb-key",
+            keep_alive=True,
         )
 
 
