@@ -18,3 +18,8 @@ docs/
 
 # Testing & cache
 .pytest_cache/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3

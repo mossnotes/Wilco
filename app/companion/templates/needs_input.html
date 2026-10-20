@@ -1,0 +1,122 @@
+{% extends "layout.html" %}
+
+{% block title %}Action Required — Wilco Task{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+    <div class="text-center py-2">
+        <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-950 text-amber-400 border border-amber-800">
+            <span class="w-2 h-2 mr-1.5 rounded-full bg-amber-400 animate-ping"></span>
+            NEEDS INPUT
+        </span>
+        <h2 class="text-lg font-bold text-white mt-2">Agent Needs Your Input</h2>
+        <p class="text-xs text-slate-400">Wilco paused execution awaiting your guidance or credentials</p>
+    </div>
+
+    <!-- Task Context Card -->
+    <div class="glass rounded-xl p-4 border border-slate-800 space-y-2">
+        <div class="flex items-center justify-between text-xs text-slate-400">
+            <span>Task ID:</span>
+            <span class="font-mono text-slate-300">{{ task.task_id }}</span>
+        </div>
+        <div class="text-xs">
+            <span class="text-slate-400">Task Prompt:</span>
+            <p class="text-sm font-medium text-white mt-0.5">{{ task.prompt }}</p>
+        </div>
+        <div class="text-xs pt-1 border-t border-slate-800">
+            <span class="text-slate-400">Current Status:</span>
+            <p class="text-xs text-amber-300 font-mono mt-0.5">{{ task.status_message }}</p>
+        </div>
+    </div>
+
+    <!-- Response Form -->
+    <div class="glass rounded-xl p-4 border border-slate-800">
+        <form id="resolve-form" onsubmit="submitResolution(event)" class="space-y-4">
+            <div>
+                <label class="block text-xs font-semibold text-slate-300 mb-1">Your Response / Value</label>
+                <textarea id="user_input" rows="3" placeholder="Enter requested verification code, credentials, or confirmation..." class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm text-white focus:outline-none focus:border-blue-500"></textarea>
+            </div>
+
+            <div id="resolve-error" class="text-xs text-red-400 hidden"></div>
+
+            <div class="flex items-center space-x-2 pt-1">
+                <button type="button" onclick="cancelTask()" class="w-1/2 py-2.5 rounded-lg bg-red-950/60 hover:bg-red-900/80 border border-red-800 text-xs font-semibold text-red-300 transition">Cancel Task</button>
+                <button type="submit" id="submit-btn" class="w-1/2 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white shadow-md shadow-blue-600/30 transition">Submit & Resume</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const taskId = "{{ task.task_id }}";
+
+    async function submitResolution(e) {
+        e.preventDefault();
+        const userInput = document.getElementById('user_input').value.trim();
+        const errDiv = document.getElementById('resolve-error');
+        const submitBtn = document.getElementById('submit-btn');
+
+        errDiv.classList.add('hidden');
+        submitBtn.disabled = true;
+        submitBtn.innerText = 'Submitting...';
+
+        try {
+            const resp = await fetch(`/api/tasks/${taskId}/resolve-input`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    approved: true,
+                    user_input: userInput
+                })
+            });
+
+            if (!resp.ok) {
+                const data = await resp.json();
+                throw new Error(data.detail || 'Failed to submit response');
+            }
+
+            alert('Input accepted! The agent will resume execution.');
+            if (window.Telegram && window.Telegram.WebApp) {
+                window.Telegram.WebApp.close();
+            } else {
+                window.location.href = '/companion/accounts';
+            }
+        } catch (err) {
+            errDiv.innerText = err.message;
+            errDiv.classList.remove('hidden');
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.innerText = 'Submit & Resume';
+        }
+    }
+
+    async function cancelTask() {
+        if (!confirm('Are you sure you want to cancel this task?')) return;
+
+        try {
+            const resp = await fetch(`/api/tasks/${taskId}/resolve-input`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    approved: false,
+                    user_input: 'Cancelled by user via companion app'
+                })
+            });
+
+            if (resp.ok) {
+                alert('Task cancelled.');
+                if (window.Telegram && window.Telegram.WebApp) {
+                    window.Telegram.WebApp.close();
+                } else {
+                    window.location.href = '/companion/accounts';
+                }
+            }
+        } catch (err) {
+            alert('Error cancelling task: ' + err.message);
+        }
+    }
+</script>
+{% endblock %}
+

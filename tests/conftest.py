@@ -21,6 +21,8 @@ def reset_settings(monkeypatch):
     monkeypatch.setattr(settings, "BROWSER_HEADLESS", True)
     monkeypatch.setattr(settings, "BROWSERBASE_API_KEY", "")
     monkeypatch.setattr(settings, "BROWSERBASE_PROJECT_ID", "")
+    # Default 32-byte Base64 key for testing
+    monkeypatch.setattr(settings, "VAULT_MASTER_KEY", "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")
 
 
 @pytest.fixture
@@ -29,4 +31,3 @@ async def async_client() -> AsyncGenerator[AsyncClient, None]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
-
