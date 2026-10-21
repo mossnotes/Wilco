@@ -71,6 +71,7 @@ async def run_browser_task(
                 task=task.prompt,
                 browser=browser,
                 step_callback=on_step,
+                telegram_id=task.user_id,
             )
 
             # 2. Run agent execution loop
