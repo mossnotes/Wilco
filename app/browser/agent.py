@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 SECURITY_INSTRUCTIONS = """
 CREDENTIAL INJECTION & ZERO-KNOWLEDGE SECURITY INSTRUCTIONS:
 1. When encountering an authentication, login, or verification page, NEVER ask the user to post their passwords, API keys, or TOTP seeds in chat.
-2. When a password input field is visible, focus or click it, then invoke the 'inject_credential' tool with slot='password' and domain='<domain>'.
-3. If a username or login email is required, invoke 'inject_credential' with slot='username' and domain='<domain>'.
-4. If a two-factor authentication (2FA) or TOTP verification code is required, focus the code input field and invoke 'inject_totp' with domain='<domain>'.
+2. When a password input field is visible, invoke the 'inject_credential' tool with slot='password', domain='<domain>', and optional index=<element_index>.
+3. If a username or login email is required, invoke 'inject_credential' with slot='username', domain='<domain>', and optional index=<element_index>.
+4. If a two-factor authentication (2FA) or TOTP verification code is required, invoke 'inject_totp' with domain='<domain>' and optional index=<element_index>.
 5. Credentials and TOTP codes are typed directly into the active browser page via the secure keystroke layer. Never attempt to guess, extract, or echo plaintext secrets in your thoughts, plans, or final results.
 """
 
@@ -59,20 +59,16 @@ def create_agent(
     # Append security instructions
     combined_system_message = SECURITY_INSTRUCTIONS
     if extend_system_message:
-        combined_system_message = f"{SECURITY_INSTRUCTIONS}\n\n{extend_system_message}"
+        combined_system_message = f"{combined_system_message}\n\n{extend_system_message}"
 
-    agent_kwargs: dict[str, Any] = {
-        "task": task,
-        "llm": agent_llm,
-        "browser": browser,
-        "max_failures": max_failures,
-        "use_vision": use_vision,
-        "controller": agent_controller,
-        "extend_system_message": combined_system_message,
+    return Agent(
+        task=task,
+        browser=browser,
+        llm=agent_llm,
+        controller=agent_controller,
+        register_new_step_callback=step_callback,
+        max_failures=max_failures,
+        use_vision=use_vision,
+        extend_system_message=combined_system_message,
         **kwargs,
-    }
-
-    if step_callback is not None:
-        agent_kwargs["register_new_step_callback"] = step_callback
-
-    return Agent(**agent_kwargs)
+    )

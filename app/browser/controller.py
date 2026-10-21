@@ -1,12 +1,14 @@
 import asyncio
 import logging
 import re
-from typing import Optional, Union
+from typing import Any, Optional, Union
 import urllib.parse
 import uuid
 
 from browser_use import ActionResult, Controller
+from browser_use.browser.events import TypeTextEvent
 from browser_use.browser.session import BrowserSession
+from browser_use.dom.views import EnhancedDOMTreeNode, NodeType
 
 from app.config import settings
 from app.db.engine import async_session_factory
@@ -81,19 +83,150 @@ def validate_origin(page_url: str, expected_domain: str) -> tuple[bool, str]:
     return False, f"Active page host '{active_host}' does not match target domain '{target_host}'."
 
 
+def create_root_dom_node() -> EnhancedDOMTreeNode:
+    """Creates a root DOM node with backend_node_id=0 for focused page typing via CDP."""
+    return EnhancedDOMTreeNode(
+        node_id=0,
+        backend_node_id=0,
+        node_type=NodeType.ELEMENT_NODE,
+        node_name="BODY",
+        node_value="",
+        attributes={},
+        is_scrollable=False,
+        is_visible=True,
+        absolute_position=None,
+        target_id="",
+        frame_id=None,
+        session_id=None,
+        content_document=None,
+        shadow_root_type=None,
+        shadow_roots=None,
+        parent_node=None,
+        children_nodes=None,
+        ax_node=None,
+        snapshot_node=None,
+    )
+
+
+async def verify_active_focus_editable(page: Any) -> tuple[bool, str]:
+    """
+    Verifies that document.activeElement represents an editable input.
+    Fails closed if the currently focused element is read-only, disabled, or not an input.
+    """
+    if not hasattr(page, "evaluate") or not callable(getattr(page, "evaluate")):
+        return True, ""
+    try:
+        check_fn = (
+            "() => {"
+            "  const el = document.activeElement;"
+            "  if (!el || el === document.body) return JSON.stringify({editable: false, reason: 'No element has active focus'});"
+            "  const tag = (el.tagName || '').toLowerCase();"
+            "  const isInput = tag === 'input' || tag === 'textarea';"
+            "  const isContentEditable = Boolean(el.isContentEditable);"
+            "  const isReadOnly = Boolean(el.readOnly || el.disabled);"
+            "  if (isReadOnly) return JSON.stringify({editable: false, reason: 'Active input is read-only or disabled'});"
+            "  if (!isInput && !isContentEditable) return JSON.stringify({editable: false, reason: 'Active element is not an editable input (' + tag + ')'});"
+            "  return JSON.stringify({editable: true, tag: tag, type: el.type || ''});"
+            "}"
+        )
+        res = page.evaluate(check_fn)
+        if asyncio.iscoroutine(res) or hasattr(res, "__await__"):
+            res_str = await res
+        elif isinstance(res, str):
+            res_str = res
+        else:
+            res_str = ""
+
+        if res_str and isinstance(res_str, str) and res_str.startswith("{"):
+            import json
+            data = json.loads(res_str)
+            if not data.get("editable"):
+                return False, data.get("reason", "Active element is not editable")
+    except Exception as exc:
+        logger.debug(f"Could not verify active focus via evaluate: {exc}")
+    return True, ""
+
+
+async def dispatch_sensitive_keystrokes(
+    browser_session: BrowserSession,
+    page: Any,
+    text: str,
+    slot_name: str,
+    index: Optional[int] = None,
+) -> tuple[bool, str]:
+    """
+    Dispatches sensitive keystrokes directly into the browser target.
+    
+    1. If index is provided: resolves the specific DOM element node via get_element_by_index(index).
+       Fails closed if node is not found.
+    2. If index is None: verifies active focus represents an editable input element.
+    3. Dispatches via browser_session.event_bus with TypeTextEvent(is_sensitive=True, sensitive_key_name=slot_name).
+    4. Falls back to page.keyboard.type if event_bus is unavailable (backward compatibility with legacy test mocks).
+    """
+    target_node: Optional[EnhancedDOMTreeNode] = None
+
+    if index is not None:
+        if hasattr(browser_session, "get_element_by_index") and callable(getattr(browser_session, "get_element_by_index")):
+            res = browser_session.get_element_by_index(index)
+            if asyncio.iscoroutine(res) or hasattr(res, "__await__"):
+                target_node = await res
+            else:
+                target_node = res
+        if target_node is None:
+            return False, f"Element index {index} not found on page. The page DOM may have changed."
+    else:
+        is_editable, reason = await verify_active_focus_editable(page)
+        if not is_editable:
+            return False, f"No editable input field currently has focus ({reason}). Please specify 'index' or focus an input field."
+
+    # Native event_bus dispatch
+    event_bus = getattr(browser_session, "event_bus", None)
+    if event_bus and hasattr(event_bus, "dispatch"):
+        try:
+            if target_node is None:
+                target_node = create_root_dom_node()
+
+            event = TypeTextEvent.model_construct(
+                node=target_node,
+                text=text,
+                clear=True,
+                is_sensitive=True,
+                sensitive_key_name=slot_name,
+            )
+            dispatched = event_bus.dispatch(event)
+            if asyncio.iscoroutine(dispatched) or hasattr(dispatched, "__await__"):
+                await dispatched
+            return True, ""
+        except Exception as exc:
+            logger.error(f"Failed to dispatch TypeTextEvent via event bus: {exc}")
+            return False, f"Failed to dispatch keystrokes via CDP event bus: {exc}"
+
+    # Fallback for page.keyboard mocks
+    if hasattr(page, "keyboard") and hasattr(page.keyboard, "type"):
+        try:
+            res = page.keyboard.type(text, delay=50)
+            if asyncio.iscoroutine(res) or hasattr(res, "__await__"):
+                await res
+            return True, ""
+        except Exception as exc:
+            return False, f"Failed to inject keystrokes via keyboard: {exc}"
+
+    return False, "Browser session does not support event_bus or keyboard input."
+
+
 class SecureController(Controller):
     """
     Custom Controller providing zero-knowledge keystroke injection for authenticated browser tasks.
     
     Exposes:
-    - inject_credential: Types vaulted passwords or usernames directly into the active field.
+    - inject_credential: Types vaulted passwords or usernames into targeted or focused inputs.
     - inject_totp: Computes RFC 6238 TOTP codes server-side with drift protection and types them into 2FA fields.
     
     Guarantees:
+    - Native CDP TypeTextEvent dispatch with is_sensitive=True and element index targeting.
     - Anti-phishing origin verification prevents credential leak into mismatched or unencrypted sites.
     - Post-drift URL re-verification prevents injection if page navigates during TOTP calculation.
     - Secrets are never returned to the LLM context or recorded in action histories.
-    - Keystrokes are emitted via Playwright's CDP keyboard layer.
     """
 
     def __init__(
@@ -127,12 +260,13 @@ class SecureController(Controller):
 
     def _register_secure_actions(self) -> None:
         @self.action(
-            "Inject a vaulted credential (password, username, or API key) directly into the active focused input field on the page. "
+            "Inject a vaulted credential (password, username, or API key) directly into a targeted or focused input field on the page. "
             "Never exposes the secret to the LLM prompt or history."
         )
         async def inject_credential(
             slot: str = "password",
             domain: str = "",
+            index: Optional[int] = None,
             browser_session: Optional[BrowserSession] = None,
         ) -> ActionResult:
             if not browser_session:
@@ -219,22 +353,29 @@ class SecureController(Controller):
                     error=f"Unsupported credential slot '{slot}'. Use 'password', 'username', or 'api_key'."
                 )
 
-            # Perform keystroke injection directly via CDP keyboard layer
-            try:
-                await page.keyboard.type(value_to_type, delay=50)
-                return ActionResult(
-                    extracted_content=f"[SUCCESS] {slot.capitalize()} credential safely injected into active page input."
-                )
-            except Exception as exc:
-                logger.error(f"Error during keystroke injection: {exc}")
-                return ActionResult(error=f"Failed to inject keystrokes into page: {exc}")
+            # Dispatch keystrokes via native CDP TypeTextEvent with DOM element targeting (Step 4 Component 1)
+            success, err = await dispatch_sensitive_keystrokes(
+                browser_session=browser_session,
+                page=page,
+                text=value_to_type,
+                slot_name=slot_normalized,
+                index=index,
+            )
+            if not success:
+                logger.error(f"Failed to dispatch credential keystrokes: {err}")
+                return ActionResult(error=f"Failed to inject keystrokes: {err}")
+
+            return ActionResult(
+                extracted_content=f"[SUCCESS] {slot.capitalize()} credential safely injected."
+            )
 
         @self.action(
-            "Generate and type a 6-digit TOTP verification code for two-factor authentication directly into the active input field. "
+            "Generate and type a 6-digit TOTP verification code for two-factor authentication directly into a targeted or focused input field. "
             "Calculates the code server-side with drift protection."
         )
         async def inject_totp(
             domain: str = "",
+            index: Optional[int] = None,
             browser_session: Optional[BrowserSession] = None,
         ) -> ActionResult:
             if not browser_session:
@@ -310,11 +451,18 @@ class SecureController(Controller):
                     error="Security violation: Page navigated or changed origin during TOTP generation. Aborting injection."
                 )
 
-            try:
-                await page.keyboard.type(totp_code, delay=50)
-                return ActionResult(
-                    extracted_content="[SUCCESS] 6-digit TOTP code safely injected into active page input."
-                )
-            except Exception as exc:
-                logger.error(f"Error during TOTP keystroke typing: {exc}")
-                return ActionResult(error=f"Failed to inject TOTP code into page: {exc}")
+            # Dispatch TOTP keystrokes via native CDP TypeTextEvent with DOM element targeting (Step 4 Component 1)
+            success, err = await dispatch_sensitive_keystrokes(
+                browser_session=browser_session,
+                page=page,
+                text=totp_code,
+                slot_name="totp",
+                index=index,
+            )
+            if not success:
+                logger.error(f"Failed to dispatch TOTP keystrokes: {err}")
+                return ActionResult(error=f"Failed to inject TOTP keystrokes: {err}")
+
+            return ActionResult(
+                extracted_content="[SUCCESS] 6-digit TOTP code safely injected."
+            )

@@ -1,7 +1,11 @@
+import asyncio
+from pathlib import Path
+import tempfile
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from app.browser.runner import is_valid_image_bytes, run_browser_task
 from app.tasks.state import TaskRecord, TaskState
-from app.browser.runner import run_browser_task
 
 
 @pytest.fixture
@@ -29,6 +33,26 @@ def mock_status_manager() -> MagicMock:
     return sm
 
 
+def test_is_valid_image_bytes():
+    """Verify image magic bytes validator (Step 4 Component 4)."""
+    assert is_valid_image_bytes(None) is False
+    assert is_valid_image_bytes(b"") is False
+    assert is_valid_image_bytes(b"short") is False
+    assert is_valid_image_bytes(b"random-non-image-data-string") is False
+
+    # Valid PNG header
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
+    assert is_valid_image_bytes(png_bytes) is True
+
+    # Valid JPEG header
+    jpeg_bytes = b"\xff\xd8\xff\xe0" + b"\x00" * 50
+    assert is_valid_image_bytes(jpeg_bytes) is True
+
+    # Valid WebP header
+    webp_bytes = b"RIFF\x00\x00\x00\x00WEBP" + b"\x00" * 50
+    assert is_valid_image_bytes(webp_bytes) is True
+
+
 @pytest.mark.asyncio
 async def test_run_browser_task_happy_path(sample_task, mock_bot, mock_status_manager):
     mock_history = MagicMock()
@@ -38,12 +62,13 @@ async def test_run_browser_task_happy_path(sample_task, mock_bot, mock_status_ma
     mock_agent.run = AsyncMock(return_value=mock_history)
 
     mock_browser = MagicMock()
-    mock_browser.take_screenshot = AsyncMock(return_value=b"fake-png-screenshot")
+    # Provide valid PNG bytes
+    valid_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+    mock_browser.take_screenshot = AsyncMock(return_value=valid_png)
 
     with patch("app.browser.runner.browser_session_context") as mock_ctx_factory, \
          patch("app.browser.runner.create_agent", return_value=mock_agent) as mock_create_agent:
         
-        # Setup async context manager mock
         mock_ctx = AsyncMock()
         mock_ctx.__aenter__.return_value = mock_browser
         mock_ctx.__aexit__.return_value = None
@@ -56,21 +81,17 @@ async def test_run_browser_task_happy_path(sample_task, mock_bot, mock_status_ma
             max_steps=10,
         )
 
-        # Verify state transitions: must finish in DONE
         assert sample_task.state == TaskState.DONE
         assert "Task completed successfully" in sample_task.status_message
 
-        # Verify agent was created with correct prompt and browser
         mock_create_agent.assert_called_once()
         _, kwargs = mock_create_agent.call_args
         assert kwargs["task"] == sample_task.prompt
         assert kwargs["browser"] == mock_browser
         assert callable(kwargs["step_callback"])
 
-        # Verify screenshot capture was called
         mock_browser.take_screenshot.assert_awaited_once_with(full_page=True)
 
-        # Verify bot sent photo proof with caption
         mock_bot.send_photo.assert_awaited_once()
         _, photo_kwargs = mock_bot.send_photo.call_args
         assert photo_kwargs["chat_id"] == sample_task.chat_id
@@ -87,7 +108,6 @@ async def test_run_browser_task_step_callback(sample_task, mock_bot, mock_status
         agent = MagicMock()
         
         async def fake_run(*args, **kw):
-            # Simulate an agent triggering step callback during execution
             output = MagicMock()
             output.next_goal = "Click download button"
             output.action = []
@@ -101,7 +121,8 @@ async def test_run_browser_task_step_callback(sample_task, mock_bot, mock_status
         return agent
 
     mock_browser = MagicMock()
-    mock_browser.take_screenshot = AsyncMock(return_value=b"screenshot")
+    valid_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
+    mock_browser.take_screenshot = AsyncMock(return_value=valid_png)
 
     with patch("app.browser.runner.browser_session_context") as mock_ctx_factory, \
          patch("app.browser.runner.create_agent", side_effect=fake_create_agent):
@@ -132,7 +153,6 @@ async def test_run_browser_task_screenshot_failure_fallback_to_text(sample_task,
     mock_agent.run = AsyncMock(return_value=mock_history)
 
     mock_browser = MagicMock()
-    # Screenshot fails
     mock_browser.take_screenshot = AsyncMock(side_effect=RuntimeError("Screenshot failed"))
 
     with patch("app.browser.runner.browser_session_context") as mock_ctx_factory, \
@@ -145,11 +165,8 @@ async def test_run_browser_task_screenshot_failure_fallback_to_text(sample_task,
 
         await run_browser_task(sample_task, mock_status_manager, mock_bot)
 
-        # Task should still succeed
         assert sample_task.state == TaskState.DONE
-        # bot.send_photo was not called because screenshot failed
         mock_bot.send_photo.assert_not_called()
-        # Fallback to text message
         mock_bot.send_message.assert_awaited_once()
         _, msg_kwargs = mock_bot.send_message.call_args
         assert "Extracted data successfully." in msg_kwargs["text"]
@@ -172,10 +189,126 @@ async def test_run_browser_task_failure_handling(sample_task, mock_bot, mock_sta
 
         await run_browser_task(sample_task, mock_status_manager, mock_bot)
 
-        # Verify task transitioned to FAILED
         assert sample_task.state == TaskState.FAILED
         assert "Navigation timeout" in sample_task.error
         assert "failed" in sample_task.status_message.lower()
-
-        # Final status must be flushed with force=True
         mock_status_manager.update.assert_awaited_with(sample_task, force=True)
+
+
+@pytest.mark.asyncio
+async def test_run_browser_task_timeout_enforcement(sample_task, mock_bot, mock_status_manager):
+    """Verify that execution timeout transitions task to FAILED (Step 4 Component 4)."""
+    mock_agent = MagicMock()
+    mock_agent.run = AsyncMock(side_effect=TimeoutError("Wall-clock deadline reached"))
+
+    mock_browser = MagicMock()
+
+    with patch("app.browser.runner.browser_session_context") as mock_ctx_factory, \
+         patch("app.browser.runner.create_agent", return_value=mock_agent):
+        
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__.return_value = mock_browser
+        mock_ctx.__aexit__.return_value = None
+        mock_ctx_factory.return_value = mock_ctx
+
+        await run_browser_task(sample_task, mock_status_manager, mock_bot)
+
+        assert sample_task.state == TaskState.FAILED
+        assert "timed out" in sample_task.error.lower()
+        assert "timed out" in sample_task.status_message.lower()
+        mock_status_manager.update.assert_awaited_with(sample_task, force=True)
+
+
+@pytest.mark.asyncio
+async def test_run_browser_task_corrupt_screenshot_rejection(sample_task, mock_bot, mock_status_manager):
+    """Verify that corrupt screenshot data is rejected and falls back to text (Step 4 Component 4)."""
+    mock_history = MagicMock()
+    mock_history.final_result.return_value = "Result with corrupt screenshot."
+
+    mock_agent = MagicMock()
+    mock_agent.run = AsyncMock(return_value=mock_history)
+
+    mock_browser = MagicMock()
+    # Corrupt / invalid non-image bytes
+    mock_browser.take_screenshot = AsyncMock(return_value=b"not-a-valid-image-format-bytes-at-all")
+
+    with patch("app.browser.runner.browser_session_context") as mock_ctx_factory, \
+         patch("app.browser.runner.create_agent", return_value=mock_agent):
+        
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__.return_value = mock_browser
+        mock_ctx.__aexit__.return_value = None
+        mock_ctx_factory.return_value = mock_ctx
+
+        await run_browser_task(sample_task, mock_status_manager, mock_bot)
+
+        assert sample_task.state == TaskState.DONE
+        mock_bot.send_photo.assert_not_called()
+        mock_bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_browser_task_photo_send_error_fallback(sample_task, mock_bot, mock_status_manager):
+    """Verify that if bot.send_photo fails, it gracefully falls back to send_message (Step 4 Component 4)."""
+    mock_history = MagicMock()
+    mock_history.final_result.return_value = "Result after send_photo failure."
+
+    mock_agent = MagicMock()
+    mock_agent.run = AsyncMock(return_value=mock_history)
+
+    mock_browser = MagicMock()
+    valid_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
+    mock_browser.take_screenshot = AsyncMock(return_value=valid_png)
+
+    # bot.send_photo raises Telegram error
+    mock_bot.send_photo = AsyncMock(side_effect=RuntimeError("TelegramBadRequest: PHOTO_INVALID_DIMENSIONS"))
+
+    with patch("app.browser.runner.browser_session_context") as mock_ctx_factory, \
+         patch("app.browser.runner.create_agent", return_value=mock_agent):
+        
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__.return_value = mock_browser
+        mock_ctx.__aexit__.return_value = None
+        mock_ctx_factory.return_value = mock_ctx
+
+        await run_browser_task(sample_task, mock_status_manager, mock_bot)
+
+        assert sample_task.state == TaskState.DONE
+        mock_bot.send_photo.assert_called_once()
+        mock_bot.send_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_run_browser_task_temp_artifact_cleanup(sample_task, mock_bot, mock_status_manager):
+    """Verify that temporary screenshot files are cleaned up in finally block (Step 4 Component 4)."""
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+        valid_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
+        tf.write(valid_png)
+        temp_file_path = Path(tf.name)
+
+    assert temp_file_path.exists()
+
+    mock_history = MagicMock()
+    mock_history.final_result.return_value = "Result with temp file."
+    mock_history.screenshot_paths.return_value = [str(temp_file_path)]
+
+    mock_agent = MagicMock()
+    mock_agent.run = AsyncMock(return_value=mock_history)
+
+    mock_browser = MagicMock()
+    # Strategy A fails so Strategy B picks up the temp file
+    mock_browser.take_screenshot = AsyncMock(return_value=None)
+
+    with patch("app.browser.runner.browser_session_context") as mock_ctx_factory, \
+         patch("app.browser.runner.create_agent", return_value=mock_agent):
+        
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__.return_value = mock_browser
+        mock_ctx.__aexit__.return_value = None
+        mock_ctx_factory.return_value = mock_ctx
+
+        await run_browser_task(sample_task, mock_status_manager, mock_bot)
+
+        assert sample_task.state == TaskState.DONE
+        # Temporary file should have been cleaned up
+        assert not temp_file_path.exists()
