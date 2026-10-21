@@ -1,6 +1,8 @@
+import asyncio
 import logging
 import re
 from typing import Optional, Union
+import urllib.parse
 import uuid
 
 from browser_use import ActionResult, Controller
@@ -16,14 +18,67 @@ logger = logging.getLogger(__name__)
 
 
 def clean_domain(raw_domain: str) -> str:
-    """Normalizes input URL or host into a canonical hostname (e.g. 'https://vercel.com/login' -> 'vercel.com')."""
+    """
+    Normalizes input URL or host into a canonical hostname.
+    e.g. 'https://vercel.com/login' -> 'vercel.com', 'http://www.github.com' -> 'github.com'.
+    """
     if not raw_domain:
         return ""
-    domain = raw_domain.strip().lower()
-    domain = re.sub(r"^https?://", "", domain)
-    domain = re.sub(r"^www\.", "", domain)
-    domain = domain.split("/")[0].split(":")[0]
-    return domain
+    raw = raw_domain.strip().lower()
+    if "://" not in raw and not raw.startswith("//"):
+        raw = f"//{raw}"
+    try:
+        parts = urllib.parse.urlsplit(raw)
+        host = parts.hostname or ""
+    except Exception:
+        host = ""
+    if not host:
+        raw_s = raw_domain.strip().lower()
+        raw_s = re.sub(r"^https?://", "", raw_s)
+        raw_s = re.sub(r"^www\.", "", raw_s)
+        return raw_s.split("/")[0].split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def validate_origin(page_url: str, expected_domain: str) -> tuple[bool, str]:
+    """
+    Validates that page_url matches expected_domain under strict anti-phishing rules:
+    1. Scheme must be HTTPS, or HTTP only for local development (localhost, 127.0.0.1, ::1).
+    2. Active page hostname must match expected_domain or be a direct subdomain (.expected_domain).
+    """
+    if not page_url or not page_url.strip():
+        return False, "Active page URL is empty or unverified."
+    if not expected_domain or not expected_domain.strip():
+        return False, "Target credential domain is empty."
+
+    try:
+        parts = urllib.parse.urlsplit(page_url.strip())
+    except Exception as exc:
+        return False, f"Malformed active page URL: {exc}"
+
+    scheme = (parts.scheme or "").lower()
+    host = (parts.hostname or "").lower()
+    if not host:
+        return False, "Active page URL has no valid hostname."
+
+    is_local = host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+    if scheme == "http":
+        if not is_local:
+            return False, f"Insecure HTTP scheme rejected for remote domain '{host}'. HTTPS is required."
+    elif scheme != "https":
+        return False, f"Invalid URL scheme '{scheme}'. Only HTTPS (or local HTTP) is permitted."
+
+    active_host = host[4:] if host.startswith("www.") else host
+    target_host = clean_domain(expected_domain)
+    if not target_host:
+        return False, "Target credential domain cannot be empty."
+
+    if active_host == target_host or active_host.endswith(f".{target_host}"):
+        return True, ""
+
+    return False, f"Active page host '{active_host}' does not match target domain '{target_host}'."
 
 
 class SecureController(Controller):
@@ -35,6 +90,8 @@ class SecureController(Controller):
     - inject_totp: Computes RFC 6238 TOTP codes server-side with drift protection and types them into 2FA fields.
     
     Guarantees:
+    - Anti-phishing origin verification prevents credential leak into mismatched or unencrypted sites.
+    - Post-drift URL re-verification prevents injection if page navigates during TOTP calculation.
     - Secrets are never returned to the LLM context or recorded in action histories.
     - Keystrokes are emitted via Playwright's CDP keyboard layer.
     """
@@ -85,16 +142,28 @@ class SecureController(Controller):
             if not page:
                 return ActionResult(error="No active page found in browser session.")
 
+            # Retrieve active page URL for anti-phishing verification
+            try:
+                current_url = await browser_session.get_current_page_url()
+            except Exception as exc:
+                return ActionResult(error=f"Could not verify active page URL: {exc}")
+
             target_domain = clean_domain(domain)
-            if not target_domain:
-                try:
-                    current_url = await browser_session.get_current_page_url()
-                    target_domain = clean_domain(current_url)
-                except Exception:
-                    pass
+            if not target_domain and current_url:
+                target_domain = clean_domain(current_url)
 
             if not target_domain:
                 return ActionResult(error="Could not determine target domain for credential lookup.")
+
+            # Anti-Phishing Strict Origin Verification (Step 4 Component 2)
+            is_valid, err_msg = validate_origin(current_url, target_domain)
+            if not is_valid:
+                logger.warning(
+                    f"Origin verification failed: active URL '{current_url}' vs expected domain '{target_domain}': {err_msg}"
+                )
+                return ActionResult(
+                    error=f"Security violation: Origin verification failed ({err_msg}). Aborting credential injection."
+                )
 
             resolved_user_id = await self._resolve_user_id()
             if not resolved_user_id:
@@ -175,16 +244,28 @@ class SecureController(Controller):
             if not page:
                 return ActionResult(error="No active page found in browser session.")
 
+            # Retrieve active page URL for anti-phishing verification
+            try:
+                current_url = await browser_session.get_current_page_url()
+            except Exception as exc:
+                return ActionResult(error=f"Could not verify active page URL: {exc}")
+
             target_domain = clean_domain(domain)
-            if not target_domain:
-                try:
-                    current_url = await browser_session.get_current_page_url()
-                    target_domain = clean_domain(current_url)
-                except Exception:
-                    pass
+            if not target_domain and current_url:
+                target_domain = clean_domain(current_url)
 
             if not target_domain:
                 return ActionResult(error="Could not determine target domain for TOTP lookup.")
+
+            # Anti-Phishing Strict Origin Verification (Step 4 Component 2)
+            is_valid, err_msg = validate_origin(current_url, target_domain)
+            if not is_valid:
+                logger.warning(
+                    f"Origin verification failed before TOTP: active URL '{current_url}' vs expected domain '{target_domain}': {err_msg}"
+                )
+                return ActionResult(
+                    error=f"Security violation: Origin verification failed ({err_msg}). Aborting TOTP injection."
+                )
 
             resolved_user_id = await self._resolve_user_id()
             if not resolved_user_id:
@@ -214,6 +295,21 @@ class SecureController(Controller):
                 logger.error(f"Failed to generate safe TOTP code: {exc}")
                 return ActionResult(error=f"Failed to compute TOTP code: {exc}")
 
+            # Re-verify page URL after potential drift wait (Step 4 Component 2)
+            try:
+                post_sleep_url = await browser_session.get_current_page_url()
+            except Exception as exc:
+                return ActionResult(error=f"Could not re-verify page URL after TOTP drift sleep: {exc}")
+
+            is_valid_post, err_msg_post = validate_origin(post_sleep_url, target_domain)
+            if not is_valid_post:
+                logger.warning(
+                    f"Origin re-verification failed after TOTP wait: URL shifted to '{post_sleep_url}' (expected '{target_domain}'): {err_msg_post}"
+                )
+                return ActionResult(
+                    error="Security violation: Page navigated or changed origin during TOTP generation. Aborting injection."
+                )
+
             try:
                 await page.keyboard.type(totp_code, delay=50)
                 return ActionResult(
@@ -222,4 +318,3 @@ class SecureController(Controller):
             except Exception as exc:
                 logger.error(f"Error during TOTP keystroke typing: {exc}")
                 return ActionResult(error=f"Failed to inject TOTP code into page: {exc}")
-

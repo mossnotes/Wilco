@@ -1,7 +1,11 @@
 import base64
+import os
 from typing import Any, Literal
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Step 4 Security Hardening: Ensure telemetry is disabled before any browser_use modules load
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
 
 
 class Settings(BaseSettings):
@@ -76,6 +80,19 @@ class Settings(BaseSettings):
     BROWSER_HEADLESS: bool = True
     BROWSERBASE_API_KEY: str = ""
     BROWSERBASE_PROJECT_ID: str = ""
+
+    # Privacy & Telemetry Settings (Step 4 Security Hardening)
+    ANONYMIZED_TELEMETRY: bool = False
+
+    @field_validator("ANONYMIZED_TELEMETRY", mode="before")
+    @classmethod
+    def parse_telemetry_value(cls, v: Any) -> bool:
+        if isinstance(v, str):
+            val = v.lower() in ("true", "1", "yes", "t")
+        else:
+            val = bool(v)
+        os.environ["ANONYMIZED_TELEMETRY"] = "true" if val else "false"
+        return val
 
     # LLM Provider Configuration
     LLM_PROVIDER: Literal["gemini", "openai", "anthropic"] = "gemini"
