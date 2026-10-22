@@ -1,4 +1,5 @@
 import asyncio
+import asyncio
 from pathlib import Path
 import tempfile
 import pytest
@@ -98,7 +99,43 @@ async def test_run_browser_task_happy_path(sample_task, mock_bot, mock_status_ma
         mock_bot.send_photo.assert_awaited_once()
         _, photo_kwargs = mock_bot.send_photo.call_args
         assert photo_kwargs["chat_id"] == sample_task.chat_id
-        assert "Python 3.14.2 is the latest release" in photo_kwargs["caption"]
+        assert photo_kwargs["caption"] == "Here's the screenshot of the result."
+        mock_bot.send_message.assert_awaited_once_with(
+            chat_id=sample_task.chat_id,
+            text="Python 3.14.2 is the latest release.",
+            parse_mode=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_delivery_typing_wait_does_not_consume_browser_deadline(sample_task, mock_bot, mock_status_manager, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "TASK_TIMEOUT_SECONDS", 0.1)
+    history = MagicMock()
+    history.final_result.return_value = "The complete result."
+    agent = MagicMock()
+    agent.run = AsyncMock(return_value=history)
+    browser = MagicMock()
+    browser.take_screenshot = AsyncMock(return_value=None)
+    delivered = []
+
+    async def slow_delivery(**kwargs):
+        await asyncio.sleep(0.15)
+        delivered.append(kwargs["text"])
+
+    mock_bot.send_message.side_effect = slow_delivery
+    with (
+        patch("app.browser.runner.browser_session_context") as context_factory,
+        patch("app.browser.runner.create_agent", return_value=agent),
+    ):
+        context = AsyncMock()
+        context.__aenter__.return_value = browser
+        context_factory.return_value = context
+        await run_browser_task(sample_task, mock_status_manager, mock_bot)
+
+    assert delivered == ["The complete result."]
+    assert sample_task.state == TaskState.DONE
 
 
 @pytest.mark.asyncio
@@ -278,7 +315,9 @@ async def test_run_browser_task_photo_send_error_fallback(sample_task, mock_bot,
 
         assert sample_task.state == TaskState.DONE
         mock_bot.send_photo.assert_called_once()
-        mock_bot.send_message.assert_called()
+        mock_bot.send_message.assert_awaited_once_with(
+            chat_id=sample_task.chat_id, text="Result after send_photo failure.", parse_mode=None,
+        )
 
 
 @pytest.mark.asyncio

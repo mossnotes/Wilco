@@ -5,6 +5,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from app.config import settings
+from app.bot.delivery import MessageDeliveryMiddleware
 from app.bot.handlers import router
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,10 @@ def get_bot() -> Optional[Bot]:
             token=settings.TELEGRAM_BOT_TOKEN,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         )
+        _bot.session.middleware.register(MessageDeliveryMiddleware(
+            max_chars=settings.TELEGRAM_MESSAGE_MAX_CHARS,
+            chars_per_second=settings.TELEGRAM_TYPING_CHARS_PER_SECOND,
+        ))
     return _bot
 
 

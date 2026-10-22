@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
@@ -27,7 +28,7 @@ async def handle_start(message: Message) -> None:
     Greets the user, provisions/fetches their User record, creates a one-time
     pairing token, and presents an inline button opening the Wilco Companion App.
     """
-    user_name = message.from_user.first_name if message.from_user else "there"
+    user_name = html.escape(message.from_user.first_name) if message.from_user else "there"
     telegram_id = message.from_user.id if message.from_user else None
 
     pairing_url = None
@@ -80,7 +81,7 @@ async def handle_help(message: Message) -> None:
         "💡 <b>Running a Task:</b>\n"
         "Simply send a natural language prompt with the action you want completed "
         "(e.g., <i>\"Log in to Vercel and check deployment statuses\"</i>).\n"
-        "I will create a task and update a single status card in-place with screenshot verification."
+        "I will send you the result when it is ready and ask here if I need anything from you."
     )
     await message.answer(help_text)
 
@@ -109,7 +110,7 @@ async def handle_text_message(message: Message) -> None:
     2. LLM Routing: Replies directly or selects the existing browser task path.
        Browser concurrency is checked only when a browser task is requested.
     3. TaskRecord Creation: Initializes state machine and persists to database.
-    4. Throttled Status Card: Sends initial Telegram status card.
+    4. Optional Debug Card: Internal progress is hidden unless explicitly enabled.
     5. Registry & Execution: Registers background task in task_registry and begins runner.
     """
     # Ignore slash commands (they are caught by command filters)
@@ -177,13 +178,14 @@ async def handle_text_message(message: Message) -> None:
             pending.response = text
             pending.event.set()
             logger.info("Task %s received chat input field=%s", record.task_id, pending.field)
-        await message.answer("Received. Continuing your browser task.")
+        await message.answer("Got it. Thanks!")
         return
 
     # Replies to an expired/consumed OTP prompt must not become fresh model requests.
     reply = getattr(message, "reply_to_message", None)
     if (
-        reply and isinstance(reply.text, str) and reply.text.startswith(OTP_PROMPT_PREFIX)
+        reply and isinstance(reply.text, str)
+        and (reply.text.startswith(OTP_PROMPT_PREFIX) or f"\n\n{OTP_PROMPT_PREFIX}" in reply.text)
         and reply.from_user and reply.from_user.id == message.bot.id
     ):
         await message.answer("That code request has expired or has already been answered.")

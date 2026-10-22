@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import html
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
@@ -185,60 +184,24 @@ async def run_browser_task(
                 # 5. Extract final text result
                 result_text = history.final_result() or "Task completed, but no text result was returned."
 
-                # 6. Transition to DONE (Terminal state: immediate flush)
-                task.transition_to(
-                    TaskState.DONE,
-                    status_message="Task completed successfully! Proof delivered below.",
+        # Browser execution has finished. Release it before the delivery queue
+        # waits/types; those pauses must not consume the browser task deadline.
+        await bot.send_message(chat_id=task.chat_id, text=result_text, parse_mode=None)
+        if screenshot_bytes:
+            photo_file = BufferedInputFile(screenshot_bytes, filename=f"proof_{task.task_id}.png")
+            try:
+                await bot.send_photo(
+                    chat_id=task.chat_id,
+                    photo=photo_file,
+                    caption="Here's the screenshot of the result.",
+                    parse_mode=None,
                 )
-                await status_manager.update(task, force=True)
+            except Exception as photo_err:
+                # The full text has already arrived; never repeat it as a fallback.
+                logger.warning("Failed sending proof photo; text result was already delivered: %s", photo_err)
 
-                # 7. Deliver proof & result to Telegram (Rule 4)
-                safe_result = html.escape(result_text)
-                caption = f"🎯 <b>Result:</b>\n{safe_result}"
-                if len(caption) > 1024:
-                    caption = caption[:1020] + "..."
-
-                if screenshot_bytes:
-                    photo_file = BufferedInputFile(
-                        screenshot_bytes,
-                        filename=f"proof_{task.task_id}.png",
-                    )
-                    try:
-                        await bot.send_photo(
-                            chat_id=task.chat_id,
-                            photo=photo_file,
-                            caption=caption,
-                            parse_mode="HTML",
-                        )
-                    except Exception as photo_err:
-                        logger.warning(
-                            "Failed sending proof photo (attempting plain text fallback): %s",
-                            photo_err,
-                        )
-                        # Fallback to text message delivery
-                        try:
-                            await bot.send_message(
-                                chat_id=task.chat_id,
-                                text=caption,
-                                parse_mode="HTML",
-                            )
-                        except Exception:
-                            await bot.send_message(
-                                chat_id=task.chat_id,
-                                text=f"🎯 Result:\n{result_text}",
-                            )
-                else:
-                    try:
-                        await bot.send_message(
-                            chat_id=task.chat_id,
-                            text=caption,
-                            parse_mode="HTML",
-                        )
-                    except Exception:
-                        await bot.send_message(
-                            chat_id=task.chat_id,
-                            text=f"🎯 Result:\n{result_text}",
-                        )
+        task.transition_to(TaskState.DONE, status_message="Task completed successfully! Result delivered.")
+        await status_manager.update(task, force=True)
 
     except (TimeoutError, asyncio.TimeoutError) as to_err:
         error_msg = f"Task execution timed out after {settings.TASK_TIMEOUT_SECONDS} seconds."

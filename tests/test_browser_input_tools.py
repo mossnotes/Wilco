@@ -351,11 +351,16 @@ async def test_otp_reply_rejects_invalid_or_unmatched_input(variant, monkeypatch
         task_registry.clear_chat_input(task.chat_id)
 
 
-async def test_late_otp_reply_is_not_sent_to_router(monkeypatch):
+@pytest.mark.parametrize("split_prompt", [False, True])
+async def test_late_otp_reply_is_not_sent_to_router(monkeypatch, split_prompt):
     _, task, _, _, _ = await make_context()
     msg = message(task, "004291")
     msg.bot = SimpleNamespace(id=987)
-    msg.reply_to_message.text = otp_prompt("example.com", "sms")
+    prompt = otp_prompt("example.com", "sms")
+    if split_prompt:
+        from app.bot.delivery import split_message
+        prompt = split_message(prompt, 80)[-1]
+    msg.reply_to_message.text = prompt
     msg.reply_to_message.from_user = SimpleNamespace(id=987)
     route = AsyncMock()
     monkeypatch.setattr("app.bot.handlers.route_message", route)

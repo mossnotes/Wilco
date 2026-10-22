@@ -80,8 +80,9 @@ class SecureController(Controller):
     async def _update_status(self) -> None:
         if self.task and self.status_manager:
             try:
-                async with asyncio.timeout(5):
-                    await self.status_manager.update(self.task, force=True)
+                # Required prompts may wait behind other messages in the delivery
+                # queue. The surrounding input/task deadline bounds this wait.
+                await self.status_manager.update(self.task, force=True)
             except Exception:
                 logger.warning("Could not update credential status for task %s", self.task.task_id)
 

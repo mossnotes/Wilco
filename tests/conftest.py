@@ -11,6 +11,7 @@ def reset_settings(monkeypatch):
     monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "")
     monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "")
     monkeypatch.setattr(settings, "BOT_MODE", "webhook")
+    monkeypatch.setattr(settings, "TELEGRAM_DEBUG_STATUS", False)
     monkeypatch.setattr(settings, "LLM_PROVIDER", "gemini")
     monkeypatch.setattr(settings, "LLM_MODEL", "gemini-3.8-flash")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "")

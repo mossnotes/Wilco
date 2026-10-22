@@ -9,6 +9,8 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
+from app.bot.delivery import split_message
+from app.config import settings
 from app.tasks.state import TaskRecord, TaskState
 
 logger = logging.getLogger(__name__)
@@ -38,7 +40,6 @@ def format_status_message(task: TaskRecord) -> str:
     lines = [
         f"🎯 <b>Task:</b> <i>\"{html.escape(task.prompt)}\"</i>",
         f"🆔 <code>{task.task_id}</code>",
-        "",
         badge,
         f"📝 {html.escape(task.status_message)}",
     ]
@@ -46,7 +47,6 @@ def format_status_message(task: TaskRecord) -> str:
     # 4. If the task requires user input, give clear guidance on what to do next.
     # Secrets must never be entered in chat, so we direct the user to the companion app.
     if task.state == TaskState.NEEDS_INPUT and not task.metadata.get("chat_input_field"):
-        lines.append("")
         lines.append("👉 <i>Please open the Web Companion to provide the required input securely.</i>")
         if deadline := task.metadata.get("credential_input_deadline"):
             remaining = max(0, math.ceil(deadline - time.time()))
@@ -54,11 +54,9 @@ def format_status_message(task: TaskRecord) -> str:
 
     # 5. If an error occurred, show the failure explanation.
     if task.state == TaskState.FAILED and task.error:
-        lines.append("")
         lines.append(f"⚠️ <b>Error Details:</b> <code>{html.escape(task.error)}</code>")
 
     # 6. Add execution duration footer.
-    lines.append("")
     lines.append(f"⏱ <i>Elapsed: {elapsed}s</i>")
 
     return "\n".join(lines)
@@ -82,7 +80,8 @@ def credential_input_keyboard(task: TaskRecord) -> Optional[InlineKeyboardMarkup
 
 class StatusManager:
     """
-    Manages in-place editing of a single Telegram status message for a task.
+    Hide internal progress by default; retain an optional debug status card.
+    Required credential prompts and brief failure notices remain visible.
 
     Why this class is needed (Risk 85 Mitigation):
     Telegram strictly limits message editing frequency (roughly 1 edit per second per chat).
@@ -106,6 +105,10 @@ class StatusManager:
         """
         self.bot = bot
         self.min_interval = min_interval
+        self.debug_status = settings.TELEGRAM_DEBUG_STATUS
+        self._input_message_id: Optional[int] = None
+        self._input_url: Optional[str] = None
+        self._failure_sent = False
 
         # Monotonic timestamp of when the last edit request was completed.
         self._last_edit_time: float = 0.0
@@ -120,14 +123,16 @@ class StatusManager:
         # Lock to prevent race conditions during rapid concurrent state updates.
         self._lock = asyncio.Lock()
 
-    async def send_initial(self, task: TaskRecord) -> int:
+    async def send_initial(self, task: TaskRecord) -> Optional[int]:
         """
         Send the very first status message to the Telegram chat.
         
         Records the returned message_id inside the TaskRecord so all subsequent
         progress updates can edit this exact message in place.
         """
-        rendered_text = format_status_message(task)
+        if not self.debug_status:
+            return None
+        rendered_text = self._render_debug_status(task)
         message = await self.bot.send_message(
             chat_id=task.chat_id,
             text=rendered_text,
@@ -146,11 +151,14 @@ class StatusManager:
         :param force: If True, bypasses throttling and updates Telegram immediately.
                       Terminal states (DONE, FAILED) and NEEDS_INPUT automatically force an update.
         """
+        if not self.debug_status:
+            await self._notify_user(task)
+            return
         if task.message_id is None:
             logger.warning(f"Cannot update status for task {task.task_id}: message_id is not set.")
             return
 
-        rendered_text = format_status_message(task)
+        rendered_text = self._render_debug_status(task)
         reply_markup = credential_input_keyboard(task)
 
         # Critical states must appear immediately without waiting for cooldown.
@@ -178,6 +186,52 @@ class StatusManager:
                 self._flush_task = asyncio.create_task(
                     self._delayed_flush(task.chat_id, task.message_id, remaining_wait)
                 )
+
+    def _render_debug_status(self, task: TaskRecord) -> str:
+        # A mutable card must stay in one bubble, even for a very long prompt.
+        return split_message(
+            format_status_message(task), settings.TELEGRAM_MESSAGE_MAX_CHARS, is_html=True,
+        )[0]
+
+    async def _notify_user(self, task: TaskRecord) -> None:
+        """Surface only things the user must act on, never internal progress."""
+        async with self._lock:
+            markup = credential_input_keyboard(task)
+            if markup and not task.metadata.get("chat_input_field"):
+                url = task.metadata["companion_url"]
+                if url != self._input_url:
+                    domain = task.metadata["target_domain"]
+                    credential = task.metadata.get("credential_type", "credentials").replace("_", " ")
+                    message = await self.bot.send_message(
+                        chat_id=task.chat_id,
+                        text=f"I need your {credential} for {domain}. Open the Companion App to provide it securely.",
+                        parse_mode=None, reply_markup=markup,
+                    )
+                    self._input_message_id = message.message_id
+                    self._input_url = url
+                return
+
+            if self._input_message_id is not None:
+                try:
+                    await self.bot.edit_message_reply_markup(
+                        chat_id=task.chat_id, message_id=self._input_message_id, reply_markup=None,
+                    )
+                except Exception:
+                    logger.warning("Could not clear credential button for task %s", task.task_id)
+                self._input_message_id = None
+                self._input_url = None
+
+            if task.state == TaskState.FAILED and not self._failure_sent:
+                failure = (task.error or task.status_message).lower()
+                if "cancel" in failure:
+                    return  # The command / Companion already acknowledges cancellation.
+                text = (
+                    "That request timed out. Please try again."
+                    if "timed out" in failure or "timeout" in failure
+                    else "I couldn't complete that request. Please try again."
+                )
+                await self.bot.send_message(chat_id=task.chat_id, text=text, parse_mode=None)
+                self._failure_sent = True
 
     async def _delayed_flush(self, chat_id: int, message_id: int, delay_seconds: float) -> None:
         """
@@ -245,6 +299,9 @@ class StatusManager:
         Ensure any pending buffered updates are completely pushed to Telegram.
         Useful when completing or terminating a task run.
         """
+        if not self.debug_status:
+            await self._notify_user(task)
+            return
         async with self._lock:
             if self._flush_task and not self._flush_task.done():
                 self._flush_task.cancel()

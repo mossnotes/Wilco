@@ -7,6 +7,13 @@ from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 
 from app.tasks.state import TaskRecord, TaskState
 from app.bot.status_manager import StatusManager, format_status_message
+from app.config import settings
+
+
+@pytest.fixture(autouse=True)
+def enable_debug_status(monkeypatch):
+    # Existing card/throttling tests exercise the opt-in debug behavior.
+    monkeypatch.setattr(settings, "TELEGRAM_DEBUG_STATUS", True)
 
 
 def test_format_status_message_all_states():

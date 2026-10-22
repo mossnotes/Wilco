@@ -80,6 +80,12 @@ def create_agent(
 
     # Append security instructions
     combined_system_message = SECURITY_INSTRUCTIONS
+    combined_system_message += (
+        "\nUSER-FACING RESULTS: Write concise, conversational plain text in short "
+        "paragraphs of one or two sentences, separated by blank lines. Aim for at "
+        "most 320 characters per paragraph. Report the useful result without "
+        "narrating browser steps, internal reasoning, or implementation details."
+    )
     if sensitive_data:
         placeholder_names = ", ".join(
             f"{scope}: {', '.join(values)}" if isinstance(values, dict) else scope

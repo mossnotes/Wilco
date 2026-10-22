@@ -147,11 +147,8 @@ async def test_webhook_handles_task_text_prompt(async_client: AsyncClient):
         )
         assert response.status_code == 200
         assert response.json() == {"ok": True}
-        # Initial status message should have been sent to chat 12345
-        assert mock_bot.send_message.called
-        call_args = mock_bot.send_message.call_args[1]
-        assert call_args["chat_id"] == 12345
-        assert "Log into Vercel" in call_args["text"]
+        # Internal progress stays hidden in normal operation.
+        mock_bot.send_message.assert_not_called()
         # Background browser task was spawned
         mock_run_task.assert_called_once()
 

@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     TELEGRAM_WEBHOOK_URL: str = ""
     TELEGRAM_WEBHOOK_SECRET: str = ""
     WEBHOOK_PATH: str = "/webhook/telegram"
+    TELEGRAM_MESSAGE_MAX_CHARS: int = Field(default=320, ge=80, le=1000)
+    TELEGRAM_TYPING_CHARS_PER_SECOND: float = Field(default=55, gt=0)
+    TELEGRAM_DEBUG_STATUS: bool = False
 
     # Browser Engine Settings
     BROWSER_TYPE: Literal["local", "browserbase"] = "local"

@@ -19,7 +19,12 @@ def otp_prompt(domain: str, channel: OTPChannel) -> str:
             "SMS, WhatsApp, email, or authenticator app."
         ),
     }
-    return f"{OTP_PROMPT_PREFIX}{domain}. {sources[channel]} Reply to this message with only the code."
+    # The final paragraph fits the smallest delivery limit (80 characters).
+    # Its stable prefix identifies expired replies after chunking or a restart.
+    return (
+        f"{domain}: {sources[channel]}\n\n"
+        f"{OTP_PROMPT_PREFIX}this account. Reply with only the code."
+    )
 
 
 def normalize_otp(text: str) -> str | None:
