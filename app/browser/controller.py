@@ -186,7 +186,8 @@ async def dispatch_sensitive_keystrokes(
             if target_node is None:
                 target_node = create_root_dom_node()
 
-            event = TypeTextEvent.model_construct(
+            # Instantiate TypeTextEvent through normal constructor so BaseEvent.__init__ registers handlers
+            event = TypeTextEvent(
                 node=target_node,
                 text=text,
                 clear=True,
@@ -196,6 +197,14 @@ async def dispatch_sensitive_keystrokes(
             dispatched = event_bus.dispatch(event)
             if asyncio.iscoroutine(dispatched) or hasattr(dispatched, "__await__"):
                 await dispatched
+            if hasattr(dispatched, "event_result") and callable(getattr(dispatched, "event_result")):
+                try:
+                    res = dispatched.event_result(raise_if_any=True, raise_if_none=False)
+                    if asyncio.iscoroutine(res) or hasattr(res, "__await__"):
+                        await res
+                except Exception as result_err:
+                    logger.error(f"TypeTextEvent execution error: {result_err}")
+                    return False, f"Keystroke execution failed: {result_err}"
             return True, ""
         except Exception as exc:
             logger.error(f"Failed to dispatch TypeTextEvent via event bus: {exc}")

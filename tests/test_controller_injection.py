@@ -185,7 +185,8 @@ async def test_inject_credential_with_element_index():
     mock_browser_session.get_element_by_index.assert_called_once_with(7)
     mock_browser_session.event_bus.dispatch.assert_called_once()
     dispatched = mock_browser_session.event_bus.dispatch.call_args[0][0]
-    assert dispatched.node == target_node
+    assert dispatched.node.backend_node_id == target_node.backend_node_id
+    assert dispatched.node.node_name == target_node.node_name
     assert dispatched.text == secret_password
     assert result.error is None
 
