@@ -25,9 +25,9 @@ def test_all_main_tools_have_closed_argument_schemas_and_descriptions():
     assert len(ASSISTANT_TOOLS) == 4
     for declaration in TOOL_DECLARATIONS:
         assert len(declaration.description) > 100
-        assert declaration.parameters_json_schema == {
-            "type": "object", "properties": {}, "additionalProperties": False,
-        }
+        schema = declaration.parameters_json_schema
+        assert schema["additionalProperties"] is False
+        assert set(schema["properties"]) == ({"request"} if declaration.name == "start_browser_task" else set())
     assert len(router.message.handlers) == 1
 
 

@@ -31,8 +31,10 @@ ASSISTANT_TOOLS = (
         "a URL, and requested website actions, including logging into a website. "
         "Do not use for greetings, general explanations, help using Wilco, opening "
         "Wilco's Companion App, stopping a Wilco task, or ambiguous requests. "
-        "The application supplies the original message, authenticated user, and "
-        "current chat; this function takes no arguments. The runner handles secure "
+        "Supply request as a complete instruction resolved from the latest message "
+        "and relevant conversation context. Never expand its scope or repeat older "
+        "actions without a current request. The application binds the authenticated "
+        "user and current chat; no identity or destination arguments are accepted. The runner handles secure "
         "login and delivers the result. Calling it starts work, not proof of success."
     )),
     AssistantTool("open_companion", "companion", (
@@ -69,12 +71,12 @@ ASSISTANT_TOOLS = (
 TOOL_ROUTES = {tool.name: tool.route for tool in ASSISTANT_TOOLS}
 
 
-async def open_companion(message: Message) -> None:
+async def open_companion(message: Message) -> str:
     """Deliver a pairing link only to its authenticated owner's private chat."""
     user_id = message.from_user.id if message.from_user else None
     if not user_id or message.chat.type != ChatType.PRIVATE or message.chat.id != user_id:
         await message.answer("Message me privately to open your secure Companion App.", parse_mode=None)
-        return
+        return "Companion access requires the requesting user's private chat; no link was issued."
 
     active = task_registry.get_by_chat(message.chat.id)
     task = active[0] if active else None
@@ -94,7 +96,7 @@ async def open_companion(message: Message) -> None:
         except Exception as exc:
             logger.warning("Companion pairing failed for user %s (%s)", user_id, type(exc).__name__)
             await message.answer("I couldn't create your Companion link. Please try again.", parse_mode=None)
-            return
+            return "Companion link creation failed; no link was issued."
 
     button = (
         InlineKeyboardButton(text="Open Wilco Companion App", web_app=WebAppInfo(url=url))
@@ -104,31 +106,34 @@ async def open_companion(message: Message) -> None:
         "Here's your secure Companion link. Use it to link your account or manage your saved credentials.",
         parse_mode=None, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]]),
     )
+    return "A secure Companion access button was delivered privately to the requesting user."
 
 
-async def show_help(message: Message) -> None:
-    await message.answer(
+async def show_help(message: Message) -> str:
+    text = (
         "I can answer questions, research the web, and carry out tasks on websites. Just tell me what you need.\n\n"
         "Try 'check my Vercel deployments', 'open my Companion App', or 'stop the current task'.\n\n"
         "Keep passwords and API keys in the Companion App. If a site needs a one-time code, "
-        "I'll ask you to reply to a specific message and tell you where to find it.",
-        parse_mode=None,
+        "I'll ask you to reply to a specific message and tell you where to find it."
     )
+    await message.answer(text, parse_mode=None)
+    return text
 
 
-async def cancel_current_task(message: Message) -> None:
+async def cancel_current_task(message: Message) -> str:
     user_id = message.from_user.id if message.from_user else None
     cancelled = bool(user_id) and await task_registry.cancel_task_by_chat(message.chat.id, user_id=user_id)
-    await message.answer(
+    text = (
         "Stopped your current task. Actions already completed on a website may still apply."
-        if cancelled else "There isn't an active task of yours to stop in this chat.",
-        parse_mode=None,
+        if cancelled else "There isn't an active task of yours to stop in this chat."
     )
+    await message.answer(text, parse_mode=None)
+    return text
 
 
-async def execute_assistant_tool(route: ToolRoute, message: Message) -> None:
+async def execute_assistant_tool(route: ToolRoute, message: Message) -> str:
     """Execute only allowlisted local actions; no LLM-supplied parameters."""
     handlers = {"companion": open_companion, "help": show_help, "cancel": cancel_current_task}
     if route not in handlers:
         raise ValueError("Unsupported assistant action")
-    await handlers[route](message)
+    return await handlers[route](message)

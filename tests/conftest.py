@@ -12,6 +12,9 @@ def reset_settings(monkeypatch):
     monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "")
     monkeypatch.setattr(settings, "BOT_MODE", "webhook")
     monkeypatch.setattr(settings, "TELEGRAM_DEBUG_STATUS", False)
+    # Existing unit tests remain independent of persistent chat context. Memory
+    # integration tests enable it explicitly with isolated users/databases.
+    monkeypatch.setattr(settings, "CONVERSATION_MEMORY_ENABLED", False)
     monkeypatch.setattr(settings, "LLM_PROVIDER", "gemini")
     monkeypatch.setattr(settings, "LLM_MODEL", "gemini-3.8-flash")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "")

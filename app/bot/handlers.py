@@ -5,6 +5,8 @@ from aiogram import F, Router
 from aiogram.types import Message
 
 from app.bot.message_router import route_message
+from app.bot.memory import conversation_memory, sanitize_memory_text
+from app.bot.serialization import incoming_messages
 from app.bot.status_manager import StatusManager
 from app.bot.tools import execute_assistant_tool
 from app.browser.runner import run_browser_task
@@ -39,6 +41,16 @@ def _is_paused_control_request(text: str) -> bool:
 
 @router.message(F.text)
 async def handle_text_message(message: Message) -> None:
+    # Delete pasted credentials promptly, even while an earlier turn is waiting
+    # on the model or Telegram delivery. All other turns are ordered per chat.
+    if contains_sensitive_data(message.text or ""):
+        await _handle_text_message(message)
+        return
+    async with incoming_messages.hold(message.chat.id):
+        await _handle_text_message(message)
+
+
+async def _handle_text_message(message: Message) -> None:
     """
     Handle incoming text prompts from the user.
     
@@ -136,11 +148,19 @@ async def handle_text_message(message: Message) -> None:
         await message.answer("That code request has expired or has already been answered.")
         return
 
-    # 2. Decide whether this message needs a browser before creating any task.
+    # Load history before appending this message, so the current turn appears once.
+    # Preserve public URL parameters needed to execute the current request;
+    # persistence applies the stricter memory-only URL scrubbing separately.
+    text = sanitize_memory_text(text, strip_url_query=False)
+    context = await conversation_memory.load(user_id, chat_id)
+    await conversation_memory.remember(user_id, chat_id, "user", text)
+
+    # 2. Resolve the current request using sanitized conversation/task context.
     request_id = f"telegram:{chat_id}:{message.message_id}"
     routing_started = asyncio.get_running_loop().time()
     try:
-        decision = await route_message(text, request_id=request_id)
+        routing_context = {"context": context} if context and context.has_context else {}
+        decision = await route_message(text, request_id=request_id, **routing_context)
     except TimeoutError:
         elapsed = asyncio.get_running_loop().time() - routing_started
         logger.warning(
@@ -159,16 +179,22 @@ async def handle_text_message(message: Message) -> None:
 
     if decision.route == "reply":
         await message.answer(decision.reply, parse_mode=None)
+        await conversation_memory.remember(user_id, chat_id, "assistant", decision.reply)
         logger.info("Routing[%s] direct reply delivered", request_id)
         return
 
     if decision.route != "browser":
-        await execute_assistant_tool(decision.route, message)
+        outcome = await execute_assistant_tool(decision.route, message)
+        await conversation_memory.remember(user_id, chat_id, "tool", f"{decision.route}: {outcome}")
         logger.info("Routing[%s] assistant tool handled route=%s", request_id, decision.route)
         return
 
     if not user_id:
         await message.answer("Send me a message from your own Telegram account to start a task.", parse_mode=None)
+        return
+
+    if context and context.has_context and not decision.browser_request:
+        await message.answer("Could you clarify what you'd like me to do next?", parse_mode=None)
         return
 
     # Allow direct replies while keeping the existing browser concurrency check.
@@ -186,7 +212,7 @@ async def handle_text_message(message: Message) -> None:
     task = TaskRecord(
         user_id=user_id,
         chat_id=chat_id,
-        prompt=text,
+        prompt=sanitize_memory_text(decision.browser_request or text, strip_url_query=False),
         status_message="Task received. Initializing worker...",
     )
 
@@ -201,6 +227,12 @@ async def handle_text_message(message: Message) -> None:
     # 4. Initialize throttled status manager
     status_manager = StatusManager(bot=message.bot)
     await status_manager.send_initial(task)
+
+    # Record acceptance before spawning, so a fast runner cannot record its
+    # outcome before the handoff. This is not a claim that the task succeeded.
+    await conversation_memory.remember(
+        user_id, chat_id, "tool", f"start_browser_task accepted task={task.task_id}. Request: {task.prompt}",
+    )
 
     # 5. Launch background execution with registry tracking
     bg_task = asyncio.create_task(run_browser_task(task, status_manager, message.bot))

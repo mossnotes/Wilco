@@ -171,6 +171,20 @@ class BrowserProfile(Base):
         return f"<BrowserProfile domain={self.site_domain} user_id={self.user_id}>"
 
 
+class ConversationModel(Base):
+    """Bounded, sanitized conversational context isolated by user and chat."""
+
+    __tablename__ = "conversations"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    messages: Mapped[List[Dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False,
+    )
+
+
 class TaskModel(Base):
     """
     Persisted state machine record for Wilco tasks (satisfies Design Rule 4).

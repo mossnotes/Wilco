@@ -7,6 +7,7 @@ import pytest
 from google.genai import errors, types
 
 from app.bot import message_router
+from app.bot.memory import ConversationContext, MemoryMessage
 from app.config import settings
 
 
@@ -58,7 +59,7 @@ async def test_native_text_reply_and_request_contract(gemini_client):
     assert {tool.name for tool in config.tools[0].function_declarations} == {
         "start_browser_task", "open_companion", "show_help", "cancel_current_task",
     }
-    assert "no arguments" in config.tools[0].function_declarations[0].description
+    assert config.tools[0].function_declarations[0].parameters_json_schema["required"] == ["request"]
     options = gemini_client.factory.call_args.kwargs["http_options"]
     assert options.timeout == int(settings.ROUTING_TIMEOUT_SECONDS * 1000)
     assert options.retry_options.attempts == 2
@@ -74,6 +75,29 @@ async def test_native_browser_call_is_a_handoff(gemini_client, args):
     decision = await message_router.route_message("Check my Vercel deployments")
     assert decision.route == "browser"
     assert decision.reply == ""  # Browser runner owns progress and result delivery.
+
+
+async def test_gemini_receives_history_and_resolves_browser_request(gemini_client):
+    context = ConversationContext(messages=[
+        MemoryMessage(role="user", content="Check my deployments"),
+        MemoryMessage(role="assistant", content="Which platform?"),
+    ])
+    gemini_client.client.models.generate_content.return_value = response_with(
+        browser_call(args={"request": "Check my Vercel deployments."}),
+    )
+    decision = await message_router.route_message("Vercel", context=context)
+    contents = gemini_client.client.models.generate_content.call_args.kwargs["contents"]
+    assert "Check my deployments" in contents[0].parts[0].text
+    assert "Which platform?" in contents[0].parts[0].text
+    assert contents[-1].parts[0].text == "Vercel"
+    assert decision.browser_request == "Check my Vercel deployments."
+
+
+async def test_contextual_browser_handoff_cannot_fall_back_to_a_fragment(gemini_client):
+    context = ConversationContext(messages=[MemoryMessage(role="user", content="Check my deployments")])
+    gemini_client.client.models.generate_content.return_value = response_with(browser_call())
+    with pytest.raises(ValueError, match="complete resolved request"):
+        await message_router.route_message("Vercel", context=context)
 
 
 @pytest.mark.parametrize("name,route", [

@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     TELEGRAM_TYPING_CHARS_PER_SECOND: float = Field(default=55, gt=0)
     TELEGRAM_DEBUG_STATUS: bool = False
 
+    # Persistent conversational context (never a credential store).
+    CONVERSATION_MEMORY_ENABLED: bool = True
+    CONVERSATION_RECENT_MESSAGES: int = Field(default=20, ge=2, le=100)
+    CONVERSATION_SUMMARY_MAX_CHARS: int = Field(default=4000, ge=200, le=12000)
+    CONVERSATION_CONTEXT_MAX_CHARS: int = Field(default=24000, ge=2000, le=64000)
+
     # Browser Engine Settings
     BROWSER_TYPE: Literal["local", "browserbase"] = "local"
     BROWSER_HEADLESS: bool = True

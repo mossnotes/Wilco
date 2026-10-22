@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, List, Optional
 from aiogram import Bot
 from aiogram.types import BufferedInputFile
 
+from app.bot.memory import conversation_memory, sanitize_memory_text
 from app.browser.agent import create_agent
 from app.browser.context import browser_session_context
 from app.browser.credentials_resolver import resolve_task_credentials
@@ -20,6 +21,14 @@ if TYPE_CHECKING:
     from app.bot.status_manager import StatusManager
 
 logger = logging.getLogger(__name__)
+
+
+def _credential_values(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,) if value else ()
+    if isinstance(value, dict):
+        return tuple(secret for child in value.values() for secret in _credential_values(child))
+    return ()
 
 
 def is_valid_image_bytes(data: Optional[bytes]) -> bool:
@@ -58,6 +67,8 @@ async def run_browser_task(
     """
     logger.info("Starting browser task runner for task %s: '%s'", task.task_id, task.prompt)
     temp_cleanup_paths: List[Path] = []
+    sensitive_data = {}
+    result_text = ""
     
     try:
         task.update_status("Starting browser environment...")
@@ -118,6 +129,10 @@ async def run_browser_task(
                 # A credential timeout or Companion cancellation must never become DONE.
                 if task.is_terminal:
                     return
+                if callable(getattr(history, "is_successful", None)):
+                    success = history.is_successful()
+                    if success is False or success is None:
+                        raise RuntimeError("Browser task did not confirm successful completion.")
 
                 # 3. Transition to VERIFYING (Rule 3)
                 task.transition_to(
@@ -182,7 +197,10 @@ async def run_browser_task(
                     logger.warning("No valid screenshot evidence could be captured for task %s", task.task_id)
 
                 # 5. Extract final text result
-                result_text = history.final_result() or "Task completed, but no text result was returned."
+                result_text = sanitize_memory_text(
+                    history.final_result() or "Task completed, but no text result was returned.",
+                    secrets=_credential_values(sensitive_data), strip_url_query=False,
+                )
 
         # Browser execution has finished. Release it before the delivery queue
         # waits/types; those pauses must not consume the browser task deadline.
@@ -202,6 +220,11 @@ async def run_browser_task(
 
         task.transition_to(TaskState.DONE, status_message="Task completed successfully! Result delivered.")
         await status_manager.update(task, force=True)
+
+    except asyncio.CancelledError:
+        if not task.is_terminal:
+            task.transition_to(TaskState.FAILED, status_message="Task cancelled.", error="Cancelled")
+        raise
 
     except (TimeoutError, asyncio.TimeoutError) as to_err:
         error_msg = f"Task execution timed out after {settings.TASK_TIMEOUT_SECONDS} seconds."
@@ -232,6 +255,13 @@ async def run_browser_task(
                 logger.error("Failed to update status manager on failure: %s", flush_err)
 
     finally:
+        outcome = (
+            f"start_browser_task task={task.task_id} state={task.state.value}. "
+            + (f"Result delivered: {result_text}" if task.state == TaskState.DONE else "No successful result was confirmed.")
+        )
+        await conversation_memory.remember(
+            task.user_id, task.chat_id, "tool", outcome, secrets=_credential_values(sensitive_data),
+        )
         try:
             async with async_session_factory() as session:
                 await TaskRepository.save_task(session, task)
