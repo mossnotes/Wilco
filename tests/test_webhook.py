@@ -94,8 +94,9 @@ async def test_webhook_malformed_payload(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_webhook_handles_start_command(async_client: AsyncClient):
-    """Verify that a valid /start message update is successfully processed."""
+async def test_webhook_routes_legacy_start_through_llm(async_client: AsyncClient, mock_message_router):
+    """Telegram's Start text has no privileged handler and uses the main router."""
+    mock_message_router.return_value = MessageDecision(route="reply", reply="Hello!")
     mock_bot = AsyncMock()
     set_bot(mock_bot)
 
@@ -116,8 +117,7 @@ async def test_webhook_handles_start_command(async_client: AsyncClient):
     )
     assert response.status_code == 200
     assert response.json() == {"ok": True}
-    # Verify the bot was called to send the answer back
-    assert mock_bot.send_message.called or mock_bot.answer.called or mock_bot.method.called or True
+    mock_message_router.assert_awaited_once_with("/start", request_id="telegram:12345:1")
 
 
 @pytest.mark.asyncio

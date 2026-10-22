@@ -1,16 +1,16 @@
 import asyncio
-import html
 import logging
+import re
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
+from aiogram.types import Message
 
 from app.bot.message_router import route_message
 from app.bot.status_manager import StatusManager
+from app.bot.tools import execute_assistant_tool
 from app.browser.runner import run_browser_task
 from app.config import settings
 from app.db.engine import async_session_factory
-from app.db.repository import IdentityTokenRepository, TaskRepository, UserRepository
+from app.db.repository import TaskRepository
 from app.security.sanitizer import contains_sensitive_data
 from app.tasks.chat_input import OTP_PROMPT_PREFIX, normalize_otp
 from app.tasks.registry import task_registry
@@ -19,85 +19,22 @@ from app.tasks.state import TaskRecord, TaskState
 logger = logging.getLogger(__name__)
 router = Router(name="main_router")
 
-
-@router.message(CommandStart())
-@router.message(Command("login"))
-async def handle_start(message: Message) -> None:
-    """
-    Handle /start and /login commands.
-    Greets the user, provisions/fetches their User record, creates a one-time
-    pairing token, and presents an inline button opening the Wilco Companion App.
-    """
-    user_name = html.escape(message.from_user.first_name) if message.from_user else "there"
-    telegram_id = message.from_user.id if message.from_user else None
-
-    pairing_url = None
-    if telegram_id:
-        try:
-            async with async_session_factory() as session:
-                await UserRepository.get_or_create_by_telegram_id(session, telegram_id)
-                token_obj = await IdentityTokenRepository.create_token(
-                    session, telegram_id, ttl_minutes=settings.COMPANION_TOKEN_TTL_MINUTES
-                )
-                await session.commit()
-                base = settings.COMPANION_BASE_URL.rstrip("/")
-                pairing_url = f"{base}/link?token={token_obj.token}"
-        except Exception as exc:
-            logger.error(f"Error creating pairing token for user {telegram_id}: {exc}")
-
-    reply_markup = None
-    if pairing_url:
-        button = (
-            InlineKeyboardButton(text="🔗 Open Wilco Companion App", web_app=WebAppInfo(url=pairing_url))
-            if pairing_url.startswith("https://")
-            else InlineKeyboardButton(text="🔗 Open Wilco Companion App", url=pairing_url)
-        )
-        reply_markup = InlineKeyboardMarkup(inline_keyboard=[[button]])
-
-    welcome_text = (
-        f"👋 Hello <b>{user_name}</b>! I am <b>Wilco</b>, your Autonomous Browser & Tasks Assistant.\n\n"
-        "I can automate tasks on the web using a managed browser.\n\n"
-        "🔒 <b>Zero-Knowledge Security:</b>\n"
-        "• Passwords, API keys, and authenticator setup seeds belong in the Companion App.\n"
-        "• When a website needs a one-time code, I will ask you to reply here and tell you where to find it.\n"
-        "• Click the button below to link your account and manage vaulted credentials in our secure web companion enclave.\n\n"
-        "Send me a prompt (e.g. <i>\"Check my deployments on Vercel\"</i>) to start a task!"
-    )
-    await message.answer(welcome_text, reply_markup=reply_markup)
+# While awaiting input, only a small vocabulary of assistant-control language
+# may reach the LLM. Arbitrary input values, including codes embedded in prose,
+# stay local. This gate permits routing; the model still chooses the action.
+_PAUSED_CONTROL_WORDS = frozenset((
+    "a about account active add app assistant browser can cancel companion could "
+    "current do don't for get guide help how i is it link manage me my need no not "
+    "now of on open please request running set setup show start started stop task "
+    "tell the this to up use vault waiting want what wilco with work would you your"
+).split())
 
 
-@router.message(Command("help"))
-async def handle_help(message: Message) -> None:
-    """
-    Handle the /help command.
-    Provides instructions on interacting with Wilco, identity linking, and task cancellation.
-    """
-    help_text = (
-        "🤖 <b>Wilco Commands & Usage</b>\n\n"
-        "• <b>/start</b> - Show welcome message & companion link\n"
-        "• <b>/login</b> - Generate a fresh companion pairing link\n"
-        "• <b>/cancel</b> - Cancel an active running task\n"
-        "• <b>/help</b> - Show this help guide\n\n"
-        "💡 <b>Running a Task:</b>\n"
-        "Simply send a natural language prompt with the action you want completed "
-        "(e.g., <i>\"Log in to Vercel and check deployment statuses\"</i>).\n"
-        "I will send you the result when it is ready and ask here if I need anything from you."
-    )
-    await message.answer(help_text)
-
-
-@router.message(Command("cancel"))
-async def handle_cancel(message: Message) -> None:
-    """
-    Handle the /cancel command.
-    Cancels the currently running background task in this chat.
-    """
-    chat_id = message.chat.id
-    cancelled = await task_registry.cancel_task_by_chat(chat_id)
-    if cancelled:
-        await message.answer("❌ Active task cancelled by user.")
-    else:
-        await message.answer("ℹ️ No active task is currently running in this chat.")
+def _is_paused_control_request(text: str) -> bool:
+    if not re.fullmatch(r"[A-Za-z\s'’?!.,]+", text):
+        return False
+    words = re.findall(r"[a-z]+(?:'[a-z]+)?", text.lower().replace("’", "'"))
+    return len(words) > 1 and all(word in _PAUSED_CONTROL_WORDS for word in words)
 
 
 @router.message(F.text)
@@ -113,11 +50,7 @@ async def handle_text_message(message: Message) -> None:
     4. Optional Debug Card: Internal progress is hidden unless explicitly enabled.
     5. Registry & Execution: Registers background task in task_registry and begins runner.
     """
-    # Ignore slash commands (they are caught by command filters)
-    if message.text and message.text.startswith("/"):
-        return
-
-    text = message.text.strip()
+    text = (message.text or "").strip()
     if not text:
         return
     chat_id = message.chat.id
@@ -135,23 +68,35 @@ async def handle_text_message(message: Message) -> None:
             "⚠️ <b>Security Alert: Secret Intercepted!</b>\n\n"
             "For your security, passwords, API keys, and OTP seeds must <b>never</b> be sent in Telegram chat!\n"
             "Wilco deleted your message to prevent credential exposure.\n\n"
-            "👉 Please use the <b>Wilco Companion App</b> (/login) to securely add credentials to your encrypted vault."
+            "👉 Ask me to open the <b>Wilco Companion App</b> to securely add credentials to your encrypted vault."
         )
         await message.answer(warning_text)
         return
 
     # Resume task-bound input before routing; one-time codes must bypass LLM logs.
     pending = task_registry.get_chat_input(chat_id)
+    control_request = False
     if pending:
         if user_id != pending.task.user_id:
             return
+        reply = getattr(message, "reply_to_message", None)
+        if not reply or reply.message_id != pending.prompt_message_id:
+            # Only a new, ordinary language request can reach the LLM while
+            # paused. Replies and code/identifier-shaped values never do.
+            if (
+                reply or normalize_otp(text) is not None or not any(char.isspace() for char in text)
+                or len(text) > 320 or "\n" in text or not _is_paused_control_request(text)
+            ):
+                await message.answer(
+                    "Please reply to my input question. To stop instead, send 'stop the current task' as a new message.",
+                    parse_mode=None,
+                )
+                return
+            control_request = True
+    if pending and not control_request:
         async with pending.lock:
             if not pending.is_pending:
                 await message.answer("That input request has expired.")
-                return
-            reply = getattr(message, "reply_to_message", None)
-            if not reply or reply.message_id != pending.prompt_message_id:
-                await message.answer("Please reply to my input question so I can resume your task.")
                 return
             if pending.field == "otp":
                 code = normalize_otp(text)
@@ -217,12 +162,21 @@ async def handle_text_message(message: Message) -> None:
         logger.info("Routing[%s] direct reply delivered", request_id)
         return
 
+    if decision.route != "browser":
+        await execute_assistant_tool(decision.route, message)
+        logger.info("Routing[%s] assistant tool handled route=%s", request_id, decision.route)
+        return
+
+    if not user_id:
+        await message.answer("Send me a message from your own Telegram account to start a task.", parse_mode=None)
+        return
+
     # Allow direct replies while keeping the existing browser concurrency check.
-    if task_registry.get_by_chat(chat_id):
+    if control_request or task_registry.get_by_chat(chat_id):
         logger.info("Routing[%s] browser handoff rejected: active task exists", request_id)
         await message.answer(
             "⚠️ A task is already running in this chat.\n"
-            "Please wait for it to complete or send /cancel to stop it before starting another."
+            "Please wait for it to complete, or ask me to stop the current task before starting another."
         )
         return
 

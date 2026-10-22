@@ -224,7 +224,7 @@ class StatusManager:
             if task.state == TaskState.FAILED and not self._failure_sent:
                 failure = (task.error or task.status_message).lower()
                 if "cancel" in failure:
-                    return  # The command / Companion already acknowledges cancellation.
+                    return  # The cancellation tool / Companion already acknowledges it.
                 text = (
                     "That request timed out. Please try again."
                     if "timed out" in failure or "timeout" in failure

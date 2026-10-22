@@ -21,6 +21,9 @@ def use_structured_provider(monkeypatch):
     [
         ("Hello", MessageDecision(route="reply", reply="Hello!")),
         ("Check my deployments", MessageDecision(route="browser", reply="")),
+        ("Open my Companion App", MessageDecision(route="companion")),
+        ("How do I use Wilco?", MessageDecision(route="help")),
+        ("Stop the current task", MessageDecision(route="cancel")),
     ],
 )
 async def test_router_uses_configured_llm_with_structured_output(text, decision):
@@ -34,6 +37,8 @@ async def test_router_uses_configured_llm_with_structured_output(text, decision)
     messages = llm.ainvoke.call_args.args[0]
     assert [message.role for message in messages] == ["system", "user"]
     assert messages[1].content == text
+    for tool_name in ("start_browser_task", "open_companion", "show_help", "cancel_current_task"):
+        assert tool_name in messages[0].content
     assert llm.ainvoke.call_args.kwargs["output_format"] is MessageDecision
 
 
@@ -44,6 +49,9 @@ async def test_router_uses_configured_llm_with_structured_output(text, decision)
         {"route": "unknown", "reply": "Hello"},
         {"route": "reply", "reply": "   "},
         {"route": "reply", "reply": "x" * 4001},
+        {"route": "cancel", "reply": "I cancelled it already"},
+        {"route": "companion", "reply": "", "url": "https://attacker.example"},
+        {"route": "cancel", "reply": "", "user_id": 999},
     ],
 )
 async def test_router_rejects_invalid_decisions(completion):

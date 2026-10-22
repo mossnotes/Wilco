@@ -55,7 +55,9 @@ async def test_native_text_reply_and_request_contract(gemini_client):
     assert config.automatic_function_calling.disable is True
     assert config.response_schema is None
     assert config.response_mime_type is None
-    assert config.tools[0].function_declarations[0].name == "start_browser_task"
+    assert {tool.name for tool in config.tools[0].function_declarations} == {
+        "start_browser_task", "open_companion", "show_help", "cancel_current_task",
+    }
     assert "no arguments" in config.tools[0].function_declarations[0].description
     options = gemini_client.factory.call_args.kwargs["http_options"]
     assert options.timeout == int(settings.ROUTING_TIMEOUT_SECONDS * 1000)
@@ -72,6 +74,38 @@ async def test_native_browser_call_is_a_handoff(gemini_client, args):
     decision = await message_router.route_message("Check my Vercel deployments")
     assert decision.route == "browser"
     assert decision.reply == ""  # Browser runner owns progress and result delivery.
+
+
+@pytest.mark.parametrize("name,route", [
+    ("open_companion", "companion"), ("show_help", "help"), ("cancel_current_task", "cancel"),
+])
+async def test_native_assistant_tools_are_argument_free_handoffs(gemini_client, name, route):
+    gemini_client.client.models.generate_content.return_value = response_with(
+        types.Part(text="Invented success must not be sent"),
+        types.Part(function_call=types.FunctionCall(name=name, args={})),
+    )
+    decision = await message_router.route_message("Use the requested assistant action")
+    assert decision.route == route
+    assert decision.reply == ""
+
+
+@pytest.mark.parametrize("name", ["open_companion", "show_help", "cancel_current_task"])
+@pytest.mark.parametrize("args", [{"user_id": 999}, {"chat_id": 123}, {"task_id": "other-task"}, {"url": "https://attacker.example"}])
+async def test_assistant_tools_reject_model_supplied_parameters(gemini_client, name, args):
+    gemini_client.client.models.generate_content.return_value = response_with(
+        types.Part(function_call=types.FunctionCall(name=name, args=args)),
+    )
+    with pytest.raises(ValueError, match="do not accept arguments"):
+        await message_router.route_message("Do something")
+
+
+async def test_cannot_chain_local_action_and_browser(gemini_client):
+    gemini_client.client.models.generate_content.return_value = response_with(
+        types.Part(function_call=types.FunctionCall(name="cancel_current_task", args={})),
+        browser_call(),
+    )
+    with pytest.raises(ValueError, match="unsupported tool"):
+        await message_router.route_message("Stop and start a new task")
 
 
 @pytest.mark.asyncio

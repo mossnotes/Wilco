@@ -56,7 +56,7 @@ class ActiveTaskRegistry:
     Registry for active running tasks.
     Remediates Step 2 Gaps:
     - Gap 1 & 2: Holds strong references to running asyncio.Task objects to prevent garbage collection mid-execution.
-    - Gap 4: Tracks tasks by chat_id and task_id to support clean cancellation via /cancel.
+    - Gap 4: Tracks tasks by chat_id and task_id to support owner-bound cancellation.
     - Gap 5: Provides a global concurrency semaphore (MAX_CONCURRENT_BROWSERS).
     """
 
@@ -136,13 +136,13 @@ class ActiveTaskRegistry:
             return entry
         return None
 
-    async def cancel_task_by_chat(self, chat_id: int) -> bool:
+    async def cancel_task_by_chat(self, chat_id: int, *, user_id: int) -> bool:
         """
-        Cancels the active task running in chat_id.
+        Cancels only the requesting owner's active task in this chat.
         Transitions the task record to FAILED and forces status message update.
         """
         entry = self.get_by_chat(chat_id)
-        if not entry:
+        if not entry or not user_id or entry[0].user_id != user_id or entry[0].is_terminal:
             return False
 
         task, async_task, status_manager = entry
@@ -156,7 +156,7 @@ class ActiveTaskRegistry:
             task.transition_to(
                 TaskState.FAILED,
                 status_message="❌ Task cancelled by user.",
-                error="Cancelled by user via /cancel",
+                error="Cancelled by user request",
             )
             if status_manager:
                 await status_manager.update(task, force=True)

@@ -42,6 +42,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if bot is not None:
         try:
+            # Remove the old command menu; all capabilities use the main LLM.
+            await bot.delete_my_commands()
+        except Exception as exc:
+            logger.warning("Could not clear Telegram command menu (%s)", type(exc).__name__)
+        try:
             if settings.BOT_MODE == "webhook":
                 if settings.full_webhook_url:
                     logger.info(f"Setting Telegram webhook: {settings.full_webhook_url}")

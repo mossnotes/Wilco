@@ -3,7 +3,7 @@ import pytest
 import pytest_asyncio
 from aiogram.types import Chat, Message, User as TelegramUser
 
-from app.bot.handlers import handle_cancel, handle_start, handle_text_message
+from app.bot.handlers import handle_text_message
 from app.bot.message_router import MessageDecision
 from app.db.engine import async_session_factory, init_db
 from app.db.repository import IdentityTokenRepository, UserRepository
@@ -32,6 +32,7 @@ def make_mock_message(text: str, user_id: int = 123456, chat_id: int = 789012) -
     msg.message_id = 999
     msg.chat = MagicMock(spec=Chat)
     msg.chat.id = chat_id
+    msg.chat.type = "private"
     msg.from_user = MagicMock(spec=TelegramUser)
     msg.from_user.id = user_id
     msg.from_user.first_name = "Alice"
@@ -42,17 +43,17 @@ def make_mock_message(text: str, user_id: int = 123456, chat_id: int = 789012) -
 
 
 @pytest.mark.asyncio
-async def test_handle_start_generates_pairing_token():
-    msg = make_mock_message("/start", user_id=445566, chat_id=445566)
+async def test_companion_tool_generates_pairing_token(mock_message_router):
+    msg = make_mock_message("Help me link my account", user_id=445566, chat_id=445566)
+    mock_message_router.return_value = MessageDecision(route="companion")
 
-    await handle_start(msg)
+    await handle_text_message(msg)
 
     # Verify answer was sent with inline keyboard
     msg.answer.assert_called_once()
     args, kwargs = msg.answer.call_args
     welcome_text = args[0]
-    assert "Alice" in welcome_text
-    assert "Zero-Knowledge Security" in welcome_text
+    assert "secure Companion link" in welcome_text
 
     reply_markup = kwargs.get("reply_markup")
     assert reply_markup is not None
@@ -92,9 +93,10 @@ async def test_pasted_secret_interceptor_deletes_message(mock_message_router):
 
 
 @pytest.mark.asyncio
-async def test_cancel_command_with_active_task():
+async def test_cancel_tool_with_active_task(mock_message_router):
     chat_id = 998877
-    msg_cancel = make_mock_message("/cancel", user_id=5566, chat_id=chat_id)
+    msg_cancel = make_mock_message("Stop the current task", user_id=5566, chat_id=chat_id)
+    mock_message_router.return_value = MessageDecision(route="cancel")
 
     # Mock an active task registered in registry
     mock_task_record = TaskRecord(
@@ -112,22 +114,22 @@ async def test_cancel_command_with_active_task():
 
     task_registry.register(chat_id, mock_task_record, mock_async_task, mock_status_mgr)
 
-    # Execute /cancel
-    await handle_cancel(msg_cancel)
+    await handle_text_message(msg_cancel)
 
     # Verify background task was cancelled
     mock_async_task.cancel.assert_called_once()
     msg_cancel.answer.assert_called_once()
-    assert "Active task cancelled by user" in msg_cancel.answer.call_args[0][0]
+    assert "Stopped your current task" in msg_cancel.answer.call_args[0][0]
 
 
 @pytest.mark.asyncio
-async def test_cancel_command_without_active_task():
-    msg_cancel = make_mock_message("/cancel", user_id=123, chat_id=88776655)
-    await handle_cancel(msg_cancel)
+async def test_cancel_tool_without_active_task(mock_message_router):
+    mock_message_router.return_value = MessageDecision(route="cancel")
+    msg_cancel = make_mock_message("Stop the current task", user_id=123, chat_id=88776655)
+    await handle_text_message(msg_cancel)
 
     msg_cancel.answer.assert_called_once()
-    assert "No active task is currently running" in msg_cancel.answer.call_args[0][0]
+    assert "isn't an active task of yours" in msg_cancel.answer.call_args[0][0]
 
 
 @pytest.mark.asyncio
@@ -209,10 +211,19 @@ async def test_routing_failure_reports_error_without_starting_browser(mock_messa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("text", ["/unknown", "   "])
-async def test_commands_and_empty_messages_skip_routing(mock_message_router, text):
+@pytest.mark.parametrize("text", [None, "", "   "])
+async def test_empty_messages_skip_routing(mock_message_router, text):
     msg = make_mock_message(text)
     await handle_text_message(msg)
     mock_message_router.assert_not_awaited()
     msg.answer.assert_not_awaited()
+
+
+@pytest.mark.parametrize("text", ["/start", "/login", "/help", "/cancel", "/unknown"])
+async def test_legacy_slash_text_goes_through_main_llm(mock_message_router, text):
+    mock_message_router.return_value = MessageDecision(route="reply", reply="Tell me what you need.")
+    msg = make_mock_message(text)
+    await handle_text_message(msg)
+    mock_message_router.assert_awaited_once_with(text, request_id=f"telegram:{msg.chat.id}:{msg.message_id}")
+    msg.answer.assert_awaited_once_with("Tell me what you need.", parse_mode=None)
 
