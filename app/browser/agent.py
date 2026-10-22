@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
 import uuid
 
 from browser_use import Agent, Browser, Controller
@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 SECURITY_INSTRUCTIONS = """
 CREDENTIAL INJECTION & ZERO-KNOWLEDGE SECURITY INSTRUCTIONS:
 1. When encountering an authentication, login, or verification page, NEVER ask the user to post their passwords, API keys, or TOTP seeds in chat.
-2. When a password input field is visible, invoke the 'inject_credential' tool with slot='password', domain='<domain>', and optional index=<element_index>.
-3. If a username or login email is required, invoke 'inject_credential' with slot='username', domain='<domain>', and optional index=<element_index>.
-4. If a two-factor authentication (2FA) or TOTP verification code is required, invoke 'inject_totp' with domain='<domain>' and optional index=<element_index>.
+2. If credential placeholders (e.g. 'x_user', 'x_pass', '<domain>_pass') are available, you can type them directly into the appropriate fields; browser-use will securely substitute the real secret at execution time without logging it.
+3. Alternatively, invoke the 'inject_credential' tool with slot='password'|'username'|'api_key', domain='<domain>', and optional index=<element_index>.
+4. If a two-factor authentication (2FA) or TOTP verification code is required, invoke 'inject_totp' with domain='<domain>' and optional index=<element_index>, or use placeholders ending in 'bu_2fa_code'.
 5. Credentials and TOTP codes are typed directly into the active browser page via the secure keystroke layer. Never attempt to guess, extract, or echo plaintext secrets in your thoughts, plans, or final results.
 """
 
@@ -27,6 +27,7 @@ def create_agent(
     controller: Optional[Controller] = None,
     user_id: Optional[Union[uuid.UUID, str]] = None,
     telegram_id: Optional[int] = None,
+    sensitive_data: Optional[Dict[str, str]] = None,
     max_failures: int = 3,
     use_vision: bool = True,
     extend_system_message: Optional[str] = None,
@@ -43,6 +44,7 @@ def create_agent(
         controller: Optional custom Controller instance (defaults to SecureController if user context is provided).
         user_id: Optional user UUID for secure credential vaulting.
         telegram_id: Optional Telegram ID for user identification.
+        sensitive_data: Optional dictionary mapping placeholder names to secrets for native browser-use substitution.
         max_failures: Maximum consecutive failures before agent halts.
         use_vision: Whether the agent should inspect page screenshots/visual elements.
         extend_system_message: Additional system prompt instructions to append.
@@ -58,17 +60,39 @@ def create_agent(
 
     # Append security instructions
     combined_system_message = SECURITY_INSTRUCTIONS
+    if sensitive_data:
+        placeholder_names = ", ".join(repr(k) for k in sensitive_data.keys())
+        placeholder_guidance = (
+            f"\nAVAILABLE SENSITIVE PLACEHOLDERS: {placeholder_names}\n"
+            "Use these placeholder keys when typing into authentication forms; real values are injected at runtime."
+        )
+        combined_system_message = f"{combined_system_message}\n{placeholder_guidance}"
+
     if extend_system_message:
         combined_system_message = f"{combined_system_message}\n\n{extend_system_message}"
 
-    return Agent(
-        task=task,
-        browser=browser,
-        llm=agent_llm,
-        controller=agent_controller,
-        register_new_step_callback=step_callback,
-        max_failures=max_failures,
-        use_vision=use_vision,
-        extend_system_message=combined_system_message,
-        **kwargs,
-    )
+    agent_kwargs: Dict[str, Any] = {
+        "task": task,
+        "browser": browser,
+        "llm": agent_llm,
+        "controller": agent_controller,
+        "register_new_step_callback": step_callback,
+        "max_failures": max_failures,
+        "use_vision": use_vision,
+        "extend_system_message": combined_system_message,
+    }
+
+    if sensitive_data:
+        agent_kwargs["sensitive_data"] = sensitive_data
+
+    agent_kwargs.update(kwargs)
+
+    return Agent(**agent_kwargs)
+
+    if sensitive_data:
+        agent_kwargs["sensitive_data"] = sensitive_data
+
+    agent_kwargs.update(kwargs)
+
+    return Agent(**agent_kwargs)
+

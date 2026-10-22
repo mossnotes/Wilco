@@ -10,7 +10,9 @@ from aiogram.types import BufferedInputFile
 
 from app.browser.agent import create_agent
 from app.browser.context import browser_session_context
+from app.browser.credentials_resolver import resolve_task_credentials
 from app.config import settings
+from app.security.sanitizer import sanitize_log
 from app.tasks.state import TaskRecord, TaskState
 
 if TYPE_CHECKING:
@@ -45,11 +47,13 @@ async def run_browser_task(
     throttled Telegram status manager, captures full-page screenshot proof,
     and delivers the verified result.
     
-    Hardened guarantees (Step 4 Component 4):
+    Hardened guarantees:
+    - Native sensitive_data resolution and network-level allowed_domains enforcement.
+    - Status message log sanitization before Telegram card rendering.
     - Wall-clock timeout enforcement via asyncio.timeout(settings.TASK_TIMEOUT_SECONDS).
     - Image validation before sending proof photos (preventing corrupted photo deliveries).
     - Resilient Telegram fallbacks on API errors.
-    - Automatic temporary disk cleanup in a finally block.
+    - Complete intermediate and final screenshot cleanup from disk in a finally block.
     """
     logger.info("Starting browser task runner for task %s: '%s'", task.task_id, task.prompt)
     temp_cleanup_paths: List[Path] = []
@@ -58,9 +62,15 @@ async def run_browser_task(
         task.update_status("Starting browser environment...")
         await status_manager.update(task)
 
-        # Enforce wall-clock execution deadline (Step 4 Component 4)
+        # Pre-resolve task credentials & allowed domains from encrypted vault (Step 5.1 & 5.2)
+        sensitive_data, allowed_domains = await resolve_task_credentials(
+            telegram_id=task.user_id,
+            prompt=task.prompt,
+        )
+
+        # Enforce wall-clock execution deadline
         async with asyncio.timeout(settings.TASK_TIMEOUT_SECONDS):
-            async with browser_session_context() as browser:
+            async with browser_session_context(allowed_domains=allowed_domains or None) as browser:
                 task.update_status("Browser launched. Initializing agent reasoning...")
                 await status_manager.update(task)
 
@@ -82,17 +92,19 @@ async def run_browser_task(
                     if not goal:
                         goal = f"Executing step {step_num}..."
 
-                    # Clean up multiple spaces or newlines for clean status display
+                    # Clean up multiple spaces or newlines and sanitize before status card update (Step 5.5)
                     cleaned_goal = " ".join(str(goal).split())
-                    task.update_status(f"Step {step_num}: {cleaned_goal}")
+                    safe_goal = sanitize_log(cleaned_goal)
+                    task.update_status(f"Step {step_num}: {safe_goal}")
                     await status_manager.update(task)
 
-                # 1. Instantiate the agent bound to this browser session & task
+                # 1. Instantiate the agent bound to this browser session, task & sensitive_data
                 agent = create_agent(
                     task=task.prompt,
                     browser=browser,
                     step_callback=on_step,
                     telegram_id=task.user_id,
+                    sensitive_data=sensitive_data,
                 )
 
                 # 2. Run agent execution loop
@@ -107,6 +119,18 @@ async def run_browser_task(
 
                 # 4. Capture screenshot proof using resilient fallback strategies
                 screenshot_bytes: Optional[bytes] = None
+
+                # Register all intermediate screenshot paths for thorough disk cleanup (Step 5.5)
+                if hasattr(history, "screenshot_paths"):
+                    try:
+                        paths = history.screenshot_paths(return_none_if_not_screenshot=False)
+                        for p_str in (paths or []):
+                            if p_str:
+                                p_obj = Path(p_str)
+                                if p_obj not in temp_cleanup_paths:
+                                    temp_cleanup_paths.append(p_obj)
+                    except Exception as path_enum_err:
+                        logger.debug("Failed enumerating screenshot paths: %s", path_enum_err)
 
                 # Strategy A: Take full-page screenshot directly via active browser session
                 try:
@@ -129,7 +153,6 @@ async def run_browser_task(
                                 raw_ss = path_obj.read_bytes()
                                 if is_valid_image_bytes(raw_ss):
                                     screenshot_bytes = raw_ss
-                                    temp_cleanup_paths.append(path_obj)
                                     logger.info("Retrieved valid screenshot evidence from history path: %s", path_obj)
                     except Exception as path_err:
                         logger.debug("Failed reading screenshot from history path: %s", path_err)
@@ -236,7 +259,7 @@ async def run_browser_task(
                 logger.error("Failed to update status manager on failure: %s", flush_err)
 
     finally:
-        # Step 4 Component 4: Automatic temporary disk artifact cleanup
+        # Automatic temporary disk artifact cleanup for ALL screenshots (Step 5.5)
         for p in temp_cleanup_paths:
             try:
                 if p.exists() and p.is_file():
