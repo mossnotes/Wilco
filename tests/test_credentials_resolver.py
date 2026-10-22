@@ -4,6 +4,7 @@ import pytest_asyncio
 from app.browser.credentials_resolver import (
     extract_candidate_domains,
     get_domain_slug,
+    credential_scope,
     resolve_task_credentials,
 )
 from app.config import settings
@@ -70,6 +71,7 @@ async def test_resolve_task_credentials_single_domain():
         telegram_id=telegram_id,
         prompt="Please log into vercel.com and inspect dashboard",
     )
+    sens = sens[credential_scope("vercel.com")]
 
     assert "vercel_user" in sens
     assert sens["vercel_user"] == "testuser@example.com"
@@ -105,6 +107,7 @@ async def test_resolve_task_credentials_slug_matching():
         telegram_id=telegram_id,
         prompt="Login to github and star repository",
     )
+    sens = sens[credential_scope("github.com")]
 
     assert sens["github_user"] == "gh_dev"
     assert sens["github_pass"] == "github_token_secret"

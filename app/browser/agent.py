@@ -5,17 +5,19 @@ import uuid
 from browser_use import Agent, Browser, Controller
 
 from app.browser.controller import SecureController
+from app.browser.credentials_resolver import SensitiveData
 from app.browser.llm import get_llm
+from app.tasks.state import TaskRecord
 
 logger = logging.getLogger(__name__)
 
 SECURITY_INSTRUCTIONS = """
-CREDENTIAL INJECTION & ZERO-KNOWLEDGE SECURITY INSTRUCTIONS:
+CREDENTIAL VAULT SECURITY INSTRUCTIONS:
 1. When encountering an authentication, login, or verification page, NEVER ask the user to post their passwords, API keys, or TOTP seeds in chat.
-2. If credential placeholders (e.g. 'x_user', 'x_pass', '<domain>_pass') are available, you can type them directly into the appropriate fields; browser-use will securely substitute the real secret at execution time without logging it.
-3. Alternatively, invoke the 'inject_credential' tool with slot='password'|'username'|'api_key', domain='<domain>', and optional index=<element_index>.
-4. If a two-factor authentication (2FA) or TOTP verification code is required, invoke 'inject_totp' with domain='<domain>' and optional index=<element_index>, or use placeholders ending in 'bu_2fa_code'.
-5. Credentials and TOTP codes are typed directly into the active browser page via the secure keystroke layer. Never attempt to guess, extract, or echo plaintext secrets in your thoughts, plans, or final results.
+2. Use the standard input action with tagged placeholders, e.g. text='<secret>example_user</secret>' or text='<secret>example_pass</secret>'. browser-use substitutes the secret securely at execution time.
+3. If placeholders for the active domain are unavailable, call request_domain_credentials(domain='<active website domain>'). This loads all available credentials for that domain together. If they are missing, it pauses and asks the user through the secure WebApp; do not ask for credentials in chat.
+4. For two-factor authentication, use the provided placeholder ending in 'bu_2fa_code' with the standard input action. browser-use generates a fresh code when typing. Never type or expose the underlying TOTP seed.
+5. Only use placeholders for their associated domain. Never guess, extract, or echo plaintext secrets in thoughts, plans, results, or other tools. If credential entry times out or is cancelled, stop the task.
 """
 
 
@@ -27,7 +29,9 @@ def create_agent(
     controller: Optional[Controller] = None,
     user_id: Optional[Union[uuid.UUID, str]] = None,
     telegram_id: Optional[int] = None,
-    sensitive_data: Optional[Dict[str, str]] = None,
+    sensitive_data: Optional[SensitiveData] = None,
+    task_record: Optional[TaskRecord] = None,
+    status_manager: Any = None,
     max_failures: int = 3,
     use_vision: bool = True,
     extend_system_message: Optional[str] = None,
@@ -45,6 +49,8 @@ def create_agent(
         user_id: Optional user UUID for secure credential vaulting.
         telegram_id: Optional Telegram ID for user identification.
         sensitive_data: Optional dictionary mapping placeholder names to secrets for native browser-use substitution.
+        task_record: Running task record used to pause and resume credential requests.
+        status_manager: Telegram status manager used to deliver the secure WebApp link.
         max_failures: Maximum consecutive failures before agent halts.
         use_vision: Whether the agent should inspect page screenshots/visual elements.
         extend_system_message: Additional system prompt instructions to append.
@@ -53,15 +59,30 @@ def create_agent(
     agent_llm = llm or get_llm()
     logger.info("Creating browser-use Agent for task: %s", task)
 
+    # Preserve identity even for an empty dictionary so mid-run additions are visible.
+    if sensitive_data is None:
+        sensitive_data = controller.sensitive_data if isinstance(controller, SecureController) else {}
+
     # Automatically provision SecureController if user context is provided
     agent_controller = controller
-    if agent_controller is None and (user_id is not None or telegram_id is not None):
-        agent_controller = SecureController(user_id=user_id, telegram_id=telegram_id)
+    if agent_controller is None and (user_id is not None or telegram_id is not None or task_record is not None):
+        agent_controller = SecureController(
+            user_id=user_id, telegram_id=telegram_id, sensitive_data=sensitive_data,
+            task=task_record, status_manager=status_manager,
+        )
+    elif isinstance(agent_controller, SecureController):
+        agent_controller.sensitive_data = sensitive_data
+        agent_controller.task = task_record or agent_controller.task
+        if status_manager is not None:
+            agent_controller.status_manager = status_manager
 
     # Append security instructions
     combined_system_message = SECURITY_INSTRUCTIONS
     if sensitive_data:
-        placeholder_names = ", ".join(repr(k) for k in sensitive_data.keys())
+        placeholder_names = ", ".join(
+            f"{scope}: {', '.join(values)}" if isinstance(values, dict) else scope
+            for scope, values in sensitive_data.items()
+        )
         placeholder_guidance = (
             f"\nAVAILABLE SENSITIVE PLACEHOLDERS: {placeholder_names}\n"
             "Use these placeholder keys when typing into authentication forms; real values are injected at runtime."
@@ -80,17 +101,14 @@ def create_agent(
         "max_failures": max_failures,
         "use_vision": use_vision,
         "extend_system_message": combined_system_message,
+        "sensitive_data": sensitive_data,
+        # The step includes model reasoning as well as the 150-second human wait.
+        "step_timeout": 300,
     }
-
-    if sensitive_data:
-        agent_kwargs["sensitive_data"] = sensitive_data
-
-    agent_kwargs.update(kwargs)
-
-    return Agent(**agent_kwargs)
-
-    if sensitive_data:
-        agent_kwargs["sensitive_data"] = sensitive_data
+    if task_record is not None:
+        async def should_stop() -> bool:
+            return task_record.is_terminal
+        agent_kwargs["register_should_stop_callback"] = should_stop
 
     agent_kwargs.update(kwargs)
 

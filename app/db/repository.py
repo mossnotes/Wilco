@@ -86,19 +86,14 @@ class IdentityTokenRepository:
         marks it as used and returns the associated telegram_id.
         Otherwise returns None.
         """
-        stmt = select(IdentityToken).where(
+        # Consume atomically so two simultaneous WebApp opens cannot reuse a token.
+        stmt = update(IdentityToken).where(
             IdentityToken.token == token_str,
             IdentityToken.is_used == False,  # noqa: E712
-        )
+            IdentityToken.expires_at > datetime.now(timezone.utc),
+        ).values(is_used=True).returning(IdentityToken.telegram_id)
         result = await session.execute(stmt)
-        token_obj = result.scalar_one_or_none()
-
-        if not token_obj or not token_obj.is_valid:
-            return None
-
-        token_obj.is_used = True
-        await session.flush()
-        return token_obj.telegram_id
+        return result.scalar_one_or_none()
 
 
 class CredentialRepository:

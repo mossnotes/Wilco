@@ -1,15 +1,21 @@
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+import uuid
+
+import pyotp
 import pytest
 import pytest_asyncio
-
 from browser_use.browser.events import TypeTextEvent
+from browser_use.dom.views import EnhancedDOMTreeNode, NodeType
+from browser_use.tools.views import InputTextAction
 
 from app.browser.controller import SecureController
+from app.browser.credentials_resolver import credential_scope
 from app.config import settings
 from app.db.engine import async_session_factory, init_db
 from app.db.repository import CredentialRepository, UserRepository
-from app.security.sanitizer import contains_sensitive_data, sanitize_log
+from app.security.sanitizer import sanitize_log
 from app.security.vault import encrypt_secret
 
 CANARY_PASSWORD = "CANARY_SECRET_PWD_999888_ABCXYZ"
@@ -22,135 +28,111 @@ async def setup_db():
     await init_db()
 
 
-@pytest.mark.asyncio
-async def test_canary_password_never_leaks(caplog):
-    """End-to-End canary verification: password never appears in results or logs (Step 4 Component 6)."""
+class TypedEvent:
+    def __await__(self):
+        return self.wait().__await__()
+
+    async def wait(self):
+        return self
+
+    async def event_result(self, **kwargs):
+        return {}
+
+
+@pytest.mark.parametrize("auth_type, slot, secret", [
+    ("password", "vercel_pass", CANARY_PASSWORD),
+    ("api_key", "vercel_api_key", CANARY_API_KEY),
+    ("totp_seed", "vercel_bu_2fa_code", CANARY_TOTP_SEED),
+])
+async def test_native_input_keeps_vault_secrets_out_of_results_and_logs(auth_type, slot, secret, caplog):
     caplog.set_level(logging.DEBUG)
-    telegram_id = 99112233
-
-    async with async_session_factory() as session:
-        user, _ = await UserRepository.get_or_create_by_telegram_id(session, telegram_id)
-        blob = encrypt_secret(CANARY_PASSWORD, settings.vault_key_bytes)
+    async with async_session_factory() as db:
+        user, _ = await UserRepository.get_or_create_by_telegram_id(db, uuid.uuid4().int % 10**12)
         await CredentialRepository.add_or_update_credential(
-            session,
-            user_id=user.id,
-            site_domain="vercel.com",
-            auth_type="password",
-            encrypted_blob=blob,
-            username_or_identifier="canary_user@example.com",
+            db, user.id, "vercel.com", auth_type, encrypt_secret(secret, settings.vault_key_bytes),
         )
-        await session.commit()
-
+        await db.commit()
     controller = SecureController(user_id=user.id)
+    browser = MagicMock()
+    browser.get_current_page_url = AsyncMock(return_value="https://vercel.com/login")
+    browser.browser_profile = SimpleNamespace(allowed_domains=None)
+    browser.agent_focus_target_id = "target"
+    browser.session_manager.get_target.return_value = SimpleNamespace(url="https://vercel.com/login")
+    browser.get_element_by_index = AsyncMock(return_value=EnhancedDOMTreeNode(
+        node_id=1, backend_node_id=101, node_type=NodeType.ELEMENT_NODE, node_name="INPUT",
+        node_value="", attributes={"type": "password"}, is_scrollable=False, is_visible=True,
+        absolute_position=None, target_id="target", frame_id="frame", session_id="session",
+        content_document=None, shadow_root_type=None, shadow_roots=None, parent_node=None,
+        children_nodes=None, ax_node=None, snapshot_node=None,
+    ))
+    browser.highlight_interaction_element = AsyncMock()
+    browser.event_bus.dispatch.return_value = TypedEvent()
+    requested = await controller.registry.registry.actions["request_domain_credentials"].function(
+        domain="vercel.com", browser_session=browser,
+    )
+    assert requested.error is None
+    browser.event_bus.dispatch.assert_not_called()
 
-    mock_page = MagicMock()
-    mock_browser_session = MagicMock()
-    mock_browser_session.must_get_current_page = AsyncMock(return_value=mock_page)
-    mock_browser_session.get_current_page_url = AsyncMock(return_value="https://vercel.com/login")
-    mock_browser_session.event_bus = MagicMock()
-    mock_browser_session.event_bus.dispatch = MagicMock(return_value=None)
-
-    inject_fn = controller.registry.registry.actions["inject_credential"].function
-    result = await inject_fn(slot="password", domain="vercel.com", browser_session=mock_browser_session)
-
-    # 1. Action result verification
+    # Exercise browser-use's own registered input, substitution, TOTP, and event dispatch.
+    action_model = controller.registry.create_action_model()
+    action = action_model(input={"index": 1, "text": f"<secret>{slot}</secret>"})
+    result = await controller.act(action, browser_session=browser, sensitive_data=controller.sensitive_data)
     assert result.error is None
-    assert CANARY_PASSWORD not in (result.extracted_content or "")
-    if result.error:
-        assert CANARY_PASSWORD not in result.error
-
-    # 2. Event bus dispatch verification
-    mock_browser_session.event_bus.dispatch.assert_called_once()
-    dispatched = mock_browser_session.event_bus.dispatch.call_args[0][0]
-    assert isinstance(dispatched, TypeTextEvent)
-    assert dispatched.is_sensitive is True
-    assert dispatched.sensitive_key_name == "password"
-
-    # 3. Log inspection: secret must NEVER appear anywhere in caplog
-    assert CANARY_PASSWORD not in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_canary_api_key_never_leaks(caplog):
-    """End-to-End canary verification: API key never appears in results or logs (Step 4 Component 6)."""
-    caplog.set_level(logging.DEBUG)
-    telegram_id = 99112244
-
-    async with async_session_factory() as session:
-        user, _ = await UserRepository.get_or_create_by_telegram_id(session, telegram_id)
-        blob = encrypt_secret(CANARY_API_KEY, settings.vault_key_bytes)
-        await CredentialRepository.add_or_update_credential(
-            session,
-            user_id=user.id,
-            site_domain="github.com",
-            auth_type="api_key",
-            encrypted_blob=blob,
-        )
-        await session.commit()
-
-    controller = SecureController(user_id=user.id)
-
-    mock_page = MagicMock()
-    mock_browser_session = MagicMock()
-    mock_browser_session.must_get_current_page = AsyncMock(return_value=mock_page)
-    mock_browser_session.get_current_page_url = AsyncMock(return_value="https://github.com/settings")
-    mock_browser_session.event_bus = MagicMock()
-    mock_browser_session.event_bus.dispatch = MagicMock(return_value=None)
-
-    inject_fn = controller.registry.registry.actions["inject_credential"].function
-    result = await inject_fn(slot="api_key", domain="github.com", browser_session=mock_browser_session)
-
-    assert result.error is None
-    assert CANARY_API_KEY not in (result.extracted_content or "")
-    assert CANARY_API_KEY not in caplog.text
-
-    dispatched = mock_browser_session.event_bus.dispatch.call_args[0][0]
-    assert dispatched.is_sensitive is True
-    assert dispatched.sensitive_key_name == "api_key"
+    event = browser.event_bus.dispatch.call_args.args[0]
+    assert isinstance(event, TypeTextEvent)
+    assert event.is_sensitive is True
+    if auth_type == "totp_seed":
+        assert pyotp.TOTP(secret).verify(event.text, valid_window=1)
+        assert event.text != secret
+    else:
+        assert event.text == secret
+        assert result.extracted_content in ("Typed sensitive data", f"Typed {slot}")
+    assert secret not in requested.model_dump_json()
+    assert secret not in result.model_dump_json()
+    assert secret not in caplog.text
+    assert event.text not in result.model_dump_json()
 
 
-@pytest.mark.asyncio
-async def test_canary_totp_seed_never_leaks(caplog):
-    """End-to-End canary verification: TOTP seed never appears in results or logs (Step 4 Component 6)."""
-    caplog.set_level(logging.DEBUG)
-    telegram_id = 99112255
+@pytest.mark.parametrize("url", ["https://attacker.com", "http://vercel.com", "https://vercel.com.evil.com", "https://github.com"])
+def test_native_substitution_never_releases_other_origin_credentials(url):
+    controller = SecureController(sensitive_data={"https://*.vercel.com": {"vercel_pass": CANARY_PASSWORD}})
+    params = InputTextAction(index=1, text="<secret>vercel_pass</secret>")
+    result = controller.registry._replace_sensitive_data(params, controller.sensitive_data, url)
+    assert result.text == "<secret>vercel_pass</secret>"
 
-    async with async_session_factory() as session:
-        user, _ = await UserRepository.get_or_create_by_telegram_id(session, telegram_id)
-        blob = encrypt_secret(CANARY_TOTP_SEED, settings.vault_key_bytes)
-        await CredentialRepository.add_or_update_credential(
-            session,
-            user_id=user.id,
-            site_domain="vercel.com",
-            auth_type="totp_seed",
-            encrypted_blob=blob,
-        )
-        await session.commit()
 
-    controller = SecureController(user_id=user.id)
+@pytest.mark.parametrize("domain, url", [
+    ("localhost", "http://localhost:3000/login"), ("127.0.0.1", "http://127.0.0.1:8000/login"),
+    ("::1", "http://[::1]:8000/login"),
+])
+def test_native_substitution_supports_local_http_development(domain, url):
+    data = {credential_scope(domain): {"local_pass": CANARY_PASSWORD}}
+    controller = SecureController(sensitive_data=data)
+    result = controller.registry._replace_sensitive_data(InputTextAction(index=1, text="<secret>local_pass</secret>"), data, url)
+    assert result.text == CANARY_PASSWORD
 
-    mock_page = MagicMock()
-    mock_browser_session = MagicMock()
-    mock_browser_session.must_get_current_page = AsyncMock(return_value=mock_page)
-    mock_browser_session.get_current_page_url = AsyncMock(return_value="https://vercel.com/login")
-    mock_browser_session.event_bus = MagicMock()
-    mock_browser_session.event_bus.dispatch = MagicMock(return_value=None)
 
-    inject_totp_fn = controller.registry.registry.actions["inject_totp"].function
-    result = await inject_totp_fn(domain="vercel.com", browser_session=mock_browser_session)
+async def test_non_input_actions_cannot_expand_secrets():
+    controller = SecureController(sensitive_data={"https://*.vercel.com": {"vercel_pass": CANARY_PASSWORD}})
 
-    assert result.error is None
-    assert CANARY_TOTP_SEED not in (result.extracted_content or "")
-    assert CANARY_TOTP_SEED not in caplog.text
+    @controller.action("Echo the literal argument for testing")
+    async def echo_literal(value: str):
+        return value
+
+    browser = MagicMock()
+    browser.get_current_page_url = AsyncMock(return_value="https://vercel.com")
+    browser.agent_focus_target_id = "target"
+    browser.session_manager.get_target.return_value = SimpleNamespace(url="https://vercel.com")
+    action_model = controller.registry.create_action_model()
+    action = action_model(echo_literal={"value": "<secret>vercel_pass</secret>"})
+    result = await controller.act(action, browser_session=browser, sensitive_data=controller.sensitive_data)
+    assert result.extracted_content == "<secret>vercel_pass</secret>"
+    assert CANARY_PASSWORD not in result.model_dump_json()
 
 
 def test_canary_sanitizer_redaction():
-    """Verify that the sanitizer detects and redacts canary secrets from raw log lines."""
-    raw_message = f"Connecting with password: {CANARY_PASSWORD} and key {CANARY_API_KEY} and seed {CANARY_TOTP_SEED}"
-    sanitized = sanitize_log(raw_message)
-
-    assert CANARY_PASSWORD not in sanitized
-    assert CANARY_API_KEY not in sanitized
-    assert CANARY_TOTP_SEED not in sanitized
+    raw = f"Connecting with password: {CANARY_PASSWORD} and key {CANARY_API_KEY} and seed {CANARY_TOTP_SEED}"
+    sanitized = sanitize_log(raw)
+    for secret in (CANARY_PASSWORD, CANARY_API_KEY, CANARY_TOTP_SEED):
+        assert secret not in sanitized
     assert "[REDACTED_SECRET]" in sanitized
-

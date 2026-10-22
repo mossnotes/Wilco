@@ -85,10 +85,13 @@ async def test_run_browser_task_happy_path(sample_task, mock_bot, mock_status_ma
         assert "Task completed successfully" in sample_task.status_message
 
         mock_create_agent.assert_called_once()
+        mock_ctx_factory.assert_called_once_with()
         _, kwargs = mock_create_agent.call_args
         assert kwargs["task"] == sample_task.prompt
         assert kwargs["browser"] == mock_browser
         assert callable(kwargs["step_callback"])
+        assert kwargs["task_record"] is sample_task
+        assert kwargs["status_manager"] is mock_status_manager
 
         mock_browser.take_screenshot.assert_awaited_once_with(full_page=True)
 
@@ -312,3 +315,20 @@ async def test_run_browser_task_temp_artifact_cleanup(sample_task, mock_bot, moc
         assert sample_task.state == TaskState.DONE
         # Temporary file should have been cleaned up
         assert not temp_file_path.exists()
+
+
+async def test_credential_failure_never_becomes_done(sample_task, mock_bot, mock_status_manager):
+    async def fail_credentials(**kwargs):
+        sample_task.transition_to(TaskState.NEEDS_INPUT)
+        sample_task.transition_to(TaskState.FAILED, error="Credential entry timed out")
+        return MagicMock()
+
+    agent = MagicMock()
+    agent.run = AsyncMock(side_effect=fail_credentials)
+    with patch("app.browser.runner.browser_session_context") as context, \
+         patch("app.browser.runner.create_agent", return_value=agent):
+        context.return_value = AsyncMock()
+        await run_browser_task(sample_task, mock_status_manager, mock_bot)
+    assert sample_task.state == TaskState.FAILED
+    mock_bot.send_photo.assert_not_awaited()
+    mock_bot.send_message.assert_not_awaited()

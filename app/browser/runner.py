@@ -12,6 +12,8 @@ from app.browser.agent import create_agent
 from app.browser.context import browser_session_context
 from app.browser.credentials_resolver import resolve_task_credentials
 from app.config import settings
+from app.db.engine import async_session_factory
+from app.db.repository import TaskRepository
 from app.security.sanitizer import sanitize_log
 from app.tasks.state import TaskRecord, TaskState
 
@@ -48,7 +50,7 @@ async def run_browser_task(
     and delivers the verified result.
     
     Hardened guarantees:
-    - Native sensitive_data resolution and network-level allowed_domains enforcement.
+    - Native sensitive_data resolution restricted to each credential's HTTPS domain scope.
     - Status message log sanitization before Telegram card rendering.
     - Wall-clock timeout enforcement via asyncio.timeout(settings.TASK_TIMEOUT_SECONDS).
     - Image validation before sending proof photos (preventing corrupted photo deliveries).
@@ -62,20 +64,22 @@ async def run_browser_task(
         task.update_status("Starting browser environment...")
         await status_manager.update(task)
 
-        # Pre-resolve task credentials & allowed domains from encrypted vault (Step 5.1 & 5.2)
-        sensitive_data, allowed_domains = await resolve_task_credentials(
+        # Pre-resolve origin-scoped credentials; navigation remains open for login redirects.
+        sensitive_data, _ = await resolve_task_credentials(
             telegram_id=task.user_id,
             prompt=task.prompt,
         )
 
         # Enforce wall-clock execution deadline
         async with asyncio.timeout(settings.TASK_TIMEOUT_SECONDS):
-            async with browser_session_context(allowed_domains=allowed_domains or None) as browser:
+            async with browser_session_context() as browser:
                 task.update_status("Browser launched. Initializing agent reasoning...")
                 await status_manager.update(task)
 
                 async def on_step(state, output, step_num: int) -> None:
                     """Callback invoked by browser-use after each autonomous decision cycle."""
+                    if task.is_terminal:
+                        return
                     goal = getattr(output, "next_goal", None) or getattr(output, "current_plan_item", None)
                     
                     if not goal and hasattr(output, "action") and output.action:
@@ -105,10 +109,16 @@ async def run_browser_task(
                     step_callback=on_step,
                     telegram_id=task.user_id,
                     sensitive_data=sensitive_data,
+                    task_record=task,
+                    status_manager=status_manager,
                 )
 
                 # 2. Run agent execution loop
                 history = await agent.run(max_steps=max_steps)
+
+                # A credential timeout or Companion cancellation must never become DONE.
+                if task.is_terminal:
+                    return
 
                 # 3. Transition to VERIFYING (Rule 3)
                 task.transition_to(
@@ -259,6 +269,12 @@ async def run_browser_task(
                 logger.error("Failed to update status manager on failure: %s", flush_err)
 
     finally:
+        try:
+            async with async_session_factory() as session:
+                await TaskRepository.save_task(session, task)
+                await session.commit()
+        except Exception:
+            logger.warning("Failed to persist final task state for %s", task.task_id)
         # Automatic temporary disk artifact cleanup for ALL screenshots (Step 5.5)
         for p in temp_cleanup_paths:
             try:

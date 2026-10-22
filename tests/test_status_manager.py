@@ -1,4 +1,5 @@
 import asyncio
+import time
 from unittest.mock import AsyncMock, patch
 import pytest
 
@@ -149,4 +150,28 @@ async def test_status_manager_handles_message_not_modified():
     # Should not raise an exception
     await manager.update(task, force=True)
     assert mock_bot.edit_message_text.call_count == 1
+
+
+@pytest.mark.parametrize("base_url, is_webapp", [("https://wilco.example", True), ("http://localhost:8000", False)])
+async def test_credential_button_and_countdown_flush_immediately_and_clear_on_resume(base_url, is_webapp):
+    bot = AsyncMock()
+    manager = StatusManager(bot, min_interval=60)
+    task = TaskRecord(user_id=1, chat_id=1, prompt="Login <example>", message_id=42)
+    await manager.update(task)
+    task.transition_to(TaskState.NEEDS_INPUT, status_message="Credentials required")
+    task.metadata.update({
+        "target_domain": "example.com", "companion_url": f"{base_url}/companion/link?token=opaque",
+        "credential_input_deadline": time.time() + 150,
+    })
+    await manager.update(task)
+    assert bot.edit_message_text.await_count == 2
+    call = bot.edit_message_text.call_args.kwargs
+    assert "Time remaining:" in call["text"]
+    assert "&lt;example&gt;" in call["text"]
+    button = call["reply_markup"].inline_keyboard[0][0]
+    assert "example.com" in button.text
+    assert (button.web_app is not None) == is_webapp
+    task.transition_to(TaskState.RUNNING)
+    await manager.update(task, force=True)
+    assert bot.edit_message_text.call_args.kwargs["reply_markup"] is None
 

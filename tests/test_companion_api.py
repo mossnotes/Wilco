@@ -1,5 +1,7 @@
 import pytest
 import pytest_asyncio
+import time
+import uuid
 from httpx import AsyncClient
 
 from app.companion.auth import SESSION_COOKIE_NAME, create_session_token
@@ -10,6 +12,8 @@ from app.db.repository import (
     UserRepository,
 )
 from app.tasks.state import TaskRecord, TaskState
+from app.tasks.registry import task_registry
+from app.db.repository import CredentialRepository
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -186,4 +190,86 @@ async def test_task_needs_input_resolution(async_client: AsyncClient):
         updated_task = await TaskRepository.get_task(session, task.task_id)
         assert updated_task.state == TaskState.RUNNING
         assert updated_task.metadata.get("resolved_input") == "2FA code: 847291"
+
+
+@pytest_asyncio.fixture
+async def credential_request(async_client):
+    telegram_id = uuid.uuid4().int % 10**12
+    async with async_session_factory() as db:
+        user, _ = await UserRepository.get_or_create_by_telegram_id(db, telegram_id)
+        task = TaskRecord(
+            user_id=telegram_id, chat_id=telegram_id, prompt="Login", state=TaskState.NEEDS_INPUT,
+            metadata={"target_domain": "example.com", "credential_input_deadline": time.time() + 150},
+        )
+        await TaskRepository.save_task(db, task)
+        await db.commit()
+    pending = task_registry.register_credential_input(task, "example.com", time.time() + 150)
+    async_client.cookies.set(SESSION_COOKIE_NAME, create_session_token(user.id, telegram_id))
+    try:
+        yield user, task, pending
+    finally:
+        task_registry.clear_credential_input(task.task_id)
+
+
+@pytest.mark.parametrize("payload", [
+    {"credentials": {"other.com": "secret"}},
+    {"credentials": {"example.com": ""}},
+    {"credentials": {"example.com": "secret"}, "totp_seed": "NOT-BASE32!!"},
+    {"approved": True, "user_input": "my password is ..."},
+])
+async def test_invalid_credential_input_never_writes_or_wakes(async_client, credential_request, payload):
+    user, task, pending = credential_request
+    response = await async_client.post(f"/api/tasks/{task.task_id}/resolve-input", json=payload)
+    assert response.status_code == 400
+    assert not pending.event.is_set()
+    assert task.state == TaskState.NEEDS_INPUT
+    async with async_session_factory() as db:
+        assert await CredentialRepository.get_credentials_for_user(db, user.id) == []
+
+
+async def test_other_user_cannot_view_or_resolve_request(async_client, credential_request):
+    _, task, pending = credential_request
+    async with async_session_factory() as db:
+        other, _ = await UserRepository.get_or_create_by_telegram_id(db, uuid.uuid4().int % 10**12)
+        await db.commit()
+    async_client.cookies.set(SESSION_COOKIE_NAME, create_session_token(other.id, other.telegram_id))
+    page = await async_client.get(f"/companion/input?task_id={task.task_id}&domain=example.com")
+    assert page.status_code == 403
+    response = await async_client.post(f"/api/tasks/{task.task_id}/resolve-input", json={"credentials": {"example.com": "secret"}})
+    assert response.status_code == 403
+    assert not pending.event.is_set()
+
+
+async def test_credential_cancel_wakes_agent_without_storing_payload(async_client, credential_request):
+    user, task, pending = credential_request
+    response = await async_client.post(f"/api/tasks/{task.task_id}/resolve-input", json={
+        "approved": False, "credentials": {"example.com": "must-not-save"},
+    })
+    assert response.status_code == 200
+    assert pending.event.is_set()
+    assert task.state == TaskState.FAILED
+    async with async_session_factory() as db:
+        assert await CredentialRepository.get_credentials_for_user(db, user.id) == []
+
+
+async def test_expired_credential_request_cannot_resume(async_client, credential_request):
+    _, task, pending = credential_request
+    pending.deadline = time.time() - 1
+    response = await async_client.post(f"/api/tasks/{task.task_id}/resolve-input", json={"credentials": {"example.com": "secret"}})
+    assert response.status_code == 409
+    assert not pending.event.is_set()
+
+
+async def test_credential_request_requires_live_waiter(async_client, credential_request):
+    _, task, pending = credential_request
+    task_registry.clear_credential_input(task.task_id)
+    response = await async_client.post(f"/api/tasks/{task.task_id}/resolve-input", json={"credentials": {"example.com": "secret"}})
+    assert response.status_code == 409
+    assert not pending.event.is_set()
+
+
+async def test_domain_query_cannot_change_requested_site(async_client, credential_request):
+    _, task, _ = credential_request
+    response = await async_client.get(f"/companion/input?task_id={task.task_id}&domain=attacker.com")
+    assert response.status_code == 400
 

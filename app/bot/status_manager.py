@@ -1,10 +1,13 @@
 import asyncio
+import html
 import logging
+import math
 import time
 from typing import Optional
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from app.tasks.state import TaskRecord, TaskState
 
@@ -33,11 +36,11 @@ def format_status_message(task: TaskRecord) -> str:
 
     # 3. Assemble the base message showing the user's prompt and current state.
     lines = [
-        f"🎯 <b>Task:</b> <i>\"{task.prompt}\"</i>",
+        f"🎯 <b>Task:</b> <i>\"{html.escape(task.prompt)}\"</i>",
         f"🆔 <code>{task.task_id}</code>",
         "",
         badge,
-        f"📝 {task.status_message}",
+        f"📝 {html.escape(task.status_message)}",
     ]
 
     # 4. If the task requires user input, give clear guidance on what to do next.
@@ -45,17 +48,36 @@ def format_status_message(task: TaskRecord) -> str:
     if task.state == TaskState.NEEDS_INPUT:
         lines.append("")
         lines.append("👉 <i>Please open the Web Companion to provide the required input securely.</i>")
+        if deadline := task.metadata.get("credential_input_deadline"):
+            remaining = max(0, math.ceil(deadline - time.time()))
+            lines.append(f"⏳ <b>Time remaining:</b> {remaining}s")
 
     # 5. If an error occurred, show the failure explanation.
     if task.state == TaskState.FAILED and task.error:
         lines.append("")
-        lines.append(f"⚠️ <b>Error Details:</b> <code>{task.error}</code>")
+        lines.append(f"⚠️ <b>Error Details:</b> <code>{html.escape(task.error)}</code>")
 
     # 6. Add execution duration footer.
     lines.append("")
     lines.append(f"⏱ <i>Elapsed: {elapsed}s</i>")
 
     return "\n".join(lines)
+
+
+def credential_input_keyboard(task: TaskRecord) -> Optional[InlineKeyboardMarkup]:
+    if task.state != TaskState.NEEDS_INPUT:
+        return None
+    url = task.metadata.get("companion_url")
+    domain = task.metadata.get("target_domain")
+    if not url or not domain:
+        return None
+    label = f"🔐 Provide {domain} Credentials"
+    # Telegram requires HTTPS for WebApp buttons; keep the local development fallback.
+    button = (
+        InlineKeyboardButton(text=label, web_app=WebAppInfo(url=url))
+        if url.startswith("https://") else InlineKeyboardButton(text=label, url=url)
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[[button]])
 
 
 class StatusManager:
@@ -90,6 +112,7 @@ class StatusManager:
 
         # Stores the latest unrendered text waiting to be sent when the cooldown expires.
         self._pending_text: Optional[str] = None
+        self._pending_markup: Optional[InlineKeyboardMarkup] = None
 
         # Holds a reference to the active background delay task, if one is currently sleeping.
         self._flush_task: Optional[asyncio.Task] = None
@@ -109,6 +132,7 @@ class StatusManager:
             chat_id=task.chat_id,
             text=rendered_text,
             parse_mode="HTML",
+            reply_markup=credential_input_keyboard(task),
         )
         task.message_id = message.message_id
         self._last_edit_time = time.monotonic()
@@ -127,6 +151,7 @@ class StatusManager:
             return
 
         rendered_text = format_status_message(task)
+        reply_markup = credential_input_keyboard(task)
 
         # Critical states must appear immediately without waiting for cooldown.
         should_force = force or task.is_terminal or (task.state == TaskState.NEEDS_INPUT)
@@ -142,11 +167,13 @@ class StatusManager:
 
             if should_force or elapsed_since_last_edit >= self.min_interval:
                 # We are outside the rate-limit window or forced: send the edit immediately.
-                await self._execute_edit(task.chat_id, task.message_id, rendered_text)
+                await self._execute_edit(task.chat_id, task.message_id, rendered_text, reply_markup)
                 self._pending_text = None
+                self._pending_markup = None
             else:
                 # We are within the rate-limit cooldown window: buffer the text and schedule a delayed flush.
                 self._pending_text = rendered_text
+                self._pending_markup = reply_markup
                 remaining_wait = self.min_interval - elapsed_since_last_edit
                 self._flush_task = asyncio.create_task(
                     self._delayed_flush(task.chat_id, task.message_id, remaining_wait)
@@ -162,15 +189,20 @@ class StatusManager:
             async with self._lock:
                 if self._pending_text is not None:
                     text_to_send = self._pending_text
+                    markup_to_send = self._pending_markup
                     self._pending_text = None
-                    await self._execute_edit(chat_id, message_id, text_to_send)
+                    self._pending_markup = None
+                    await self._execute_edit(chat_id, message_id, text_to_send, markup_to_send)
         except asyncio.CancelledError:
             # Expected when a newer update arrived while we were sleeping.
             pass
         except Exception as exc:
             logger.error(f"Error during delayed status flush: {exc}")
 
-    async def _execute_edit(self, chat_id: int, message_id: int, text: str) -> None:
+    async def _execute_edit(
+        self, chat_id: int, message_id: int, text: str,
+        reply_markup: Optional[InlineKeyboardMarkup] = None,
+    ) -> None:
         """
         Perform the actual Telegram API edit_message_text call with graceful error handling.
         """
@@ -180,6 +212,7 @@ class StatusManager:
                 message_id=message_id,
                 text=text,
                 parse_mode="HTML",
+                reply_markup=reply_markup,
             )
             self._last_edit_time = time.monotonic()
         except TelegramRetryAfter as retry_err:
@@ -192,6 +225,7 @@ class StatusManager:
                     message_id=message_id,
                     text=text,
                     parse_mode="HTML",
+                    reply_markup=reply_markup,
                 )
                 self._last_edit_time = time.monotonic()
             except Exception as retry_exc:
@@ -217,6 +251,7 @@ class StatusManager:
                 self._flush_task = None
 
             if self._pending_text is not None and task.message_id is not None:
-                await self._execute_edit(task.chat_id, task.message_id, self._pending_text)
+                await self._execute_edit(task.chat_id, task.message_id, self._pending_text, self._pending_markup)
                 self._pending_text = None
+                self._pending_markup = None
 

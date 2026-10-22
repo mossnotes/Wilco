@@ -8,6 +8,7 @@ import pytest
 import pytest_asyncio
 
 from app.browser.agent import create_agent
+from app.browser.controller import SecureController
 from app.browser.context import browser_session_context, create_browser
 from app.browser.runner import run_browser_task
 from app.config import settings
@@ -15,6 +16,7 @@ from app.db.engine import async_session_factory, init_db
 from app.db.repository import BrowserProfileRepository, UserRepository
 from app.security.vault import decrypt_secret
 from app.tasks.state import TaskRecord
+from app.tasks.state import TaskState
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -48,6 +50,40 @@ def test_browser_allowed_domains_applied():
     allowed = ["*.vercel.com", "vercel.com"]
     browser = create_browser(allowed_domains=allowed)
     assert browser.browser_profile.allowed_domains == allowed
+
+
+@pytest.mark.parametrize("provided", [False, True])
+def test_empty_sensitive_data_is_shared_with_controller_agent_and_messages(provided):
+    shared = {}
+    kwargs = {"sensitive_data": shared} if provided else {}
+    with patch("app.browser.agent.Agent") as agent_class:
+        create_agent(task="Login", llm=MagicMock(), telegram_id=123, **kwargs)
+        passed = agent_class.call_args.kwargs
+        controller = passed["controller"]
+        assert isinstance(controller, SecureController)
+        assert controller.sensitive_data is passed["sensitive_data"]
+        if provided:
+            assert controller.sensitive_data is shared
+        assert passed["step_timeout"] >= 240
+
+    # Also check the real upstream Agent / MessageManager don't copy an empty map.
+    agent = create_agent(task="Login", llm=MagicMock(), sensitive_data=shared, use_vision=False)
+    assert agent.sensitive_data is shared
+    assert agent._message_manager.sensitive_data is shared
+    shared["https://*.example.com"] = {"example_pass": "private"}
+    description = agent._message_manager._get_sensitive_data_description("https://example.com/login")
+    assert "example_pass" in description
+    assert "private" not in description
+
+
+async def test_agent_stop_callback_tracks_task_failure():
+    task = TaskRecord(user_id=1, chat_id=1, prompt="Login")
+    with patch("app.browser.agent.Agent") as agent_class:
+        create_agent(task="Login", llm=MagicMock(), task_record=task)
+        callback = agent_class.call_args.kwargs["register_should_stop_callback"]
+        assert await callback() is False
+        task.transition_to(TaskState.FAILED, error="Credential request expired")
+        assert await callback() is True
 
 
 @pytest.mark.asyncio

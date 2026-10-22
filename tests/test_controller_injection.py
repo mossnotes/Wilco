@@ -1,438 +1,304 @@
-from unittest.mock import AsyncMock, MagicMock, create_autospec
+"""Smart Vault action coverage (the former injection tools are deliberately retired)."""
+
+import asyncio
+import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import parse_qs, urlsplit
+import uuid
+
 import pytest
 import pytest_asyncio
 
-from browser_use.browser.events import TypeTextEvent
-from browser_use.browser.session import BrowserSession
-from browser_use.dom.views import EnhancedDOMTreeNode, NodeType
-
-from app.browser.controller import (
-    SecureController,
-    clean_domain,
-    validate_origin,
-    verify_active_focus_editable,
-    create_root_dom_node,
-)
-from app.db.engine import async_session_factory, init_db
-from app.db.repository import CredentialRepository, UserRepository
-from app.security.vault import encrypt_secret
+from app.browser.controller import SecureController, clean_domain, validate_origin
 from app.config import settings
+from app.db.engine import async_session_factory, init_db
+from app.db.repository import CredentialRepository, IdentityTokenRepository, TaskRepository, UserRepository
+from app.security.vault import decrypt_secret, encrypt_secret
+from app.tasks.registry import task_registry
+from app.tasks.state import TaskRecord, TaskState
 
 
 @pytest_asyncio.fixture(autouse=True)
 async def setup_db():
-    """Ensure schema is initialized."""
     await init_db()
 
 
-def make_test_dom_node(index: int = 1, tag: str = "input", backend_id: int = 101) -> EnhancedDOMTreeNode:
-    """Helper creating a valid EnhancedDOMTreeNode for tests."""
-    return EnhancedDOMTreeNode(
-        node_id=index,
-        backend_node_id=backend_id,
-        node_type=NodeType.ELEMENT_NODE,
-        node_name=tag.upper(),
-        node_value="",
-        attributes={"type": "password"},
-        is_scrollable=False,
-        is_visible=True,
-        absolute_position=None,
-        target_id="target-1",
-        frame_id="frame-1",
-        session_id="session-1",
-        content_document=None,
-        shadow_root_type=None,
-        shadow_roots=None,
-        parent_node=None,
-        children_nodes=None,
-        ax_node=None,
-        snapshot_node=None,
-    )
+def browser_at(url="https://vercel.com/login"):
+    browser = MagicMock()
+    browser.get_current_page_url = AsyncMock(return_value=url)
+    browser.browser_profile = SimpleNamespace(allowed_domains=["github.com", "*.github.com"])
+    return browser
 
 
-def test_clean_domain_utility():
-    assert clean_domain("https://vercel.com/login") == "vercel.com"
-    assert clean_domain("http://www.github.com/settings") == "github.com"
-    assert clean_domain("app.supabase.com:8080/dashboard") == "app.supabase.com"
-    assert clean_domain("subdomain.example.co.uk/") == "subdomain.example.co.uk"
-    assert clean_domain("") == ""
+async def vault_user(credentials=(), domain="vercel.com"):
+    async with async_session_factory() as db:
+        user, _ = await UserRepository.get_or_create_by_telegram_id(db, uuid.uuid4().int % 10**12)
+        for auth_type, secret in credentials:
+            await CredentialRepository.add_or_update_credential(
+                db, user.id, domain, auth_type, encrypt_secret(secret, settings.vault_key_bytes),
+                username_or_identifier="admin@example.com" if auth_type == "password" else None,
+            )
+        await db.commit()
+    return user
 
 
-def test_validate_origin_rules():
-    """Tests anti-phishing strict origin validation rules (Step 4 Component 2)."""
-    # Valid HTTPS matches
-    assert validate_origin("https://vercel.com/login", "vercel.com")[0] is True
-    assert validate_origin("https://www.vercel.com/login", "vercel.com")[0] is True
-    assert validate_origin("https://app.vercel.com/dashboard", "vercel.com")[0] is True
-    assert validate_origin("https://auth.api.vercel.com/v1/auth", "vercel.com")[0] is True
-
-    # Phishing / domain spoofing attacks rejected
-    assert validate_origin("https://evil-vercel.com/login", "vercel.com")[0] is False
-    assert validate_origin("https://vercel.com.attacker.com/login", "vercel.com")[0] is False
-    assert validate_origin("https://fake-login-vercel.com", "vercel.com")[0] is False
-    assert validate_origin("https://notvercel.com", "vercel.com")[0] is False
-
-    # Insecure remote HTTP rejected
-    assert validate_origin("http://github.com/login", "github.com")[0] is False
-    assert validate_origin("http://my-bank.com/login", "my-bank.com")[0] is False
-
-    # Local development HTTP allowed
-    assert validate_origin("http://localhost:3000/login", "localhost")[0] is True
-    assert validate_origin("http://127.0.0.1:8000/login", "127.0.0.1")[0] is True
-
-    # Dangerous / non-HTTP schemes rejected
-    assert validate_origin("javascript:alert(1)", "vercel.com")[0] is False
-    assert validate_origin("data:text/html,evil", "vercel.com")[0] is False
-    assert validate_origin("file:///etc/passwd", "localhost")[0] is False
-
-    # Empty inputs rejected
-    assert validate_origin("", "vercel.com")[0] is False
-    assert validate_origin("https://vercel.com/login", "")[0] is False
+def request_action(controller):
+    return controller.registry.registry.actions["request_domain_credentials"].function
 
 
-@pytest.mark.asyncio
-async def test_controller_action_registration():
-    controller = SecureController(telegram_id=12345)
-    actions = controller.registry.registry.actions
-    assert "inject_credential" in actions
-    assert "inject_totp" in actions
+@pytest.mark.parametrize("raw, expected", [
+    ("https://vercel.com/login", "vercel.com"), ("http://www.github.com/settings", "github.com"),
+    ("app.supabase.com:8080/dashboard", "app.supabase.com"), ("subdomain.example.co.uk/", "subdomain.example.co.uk"),
+    ("", ""), ("*.example.com", ""), ("https://example.com@evil.com", ""), ("foo:invalid", ""),
+])
+def test_clean_domain_utility(raw, expected):
+    assert clean_domain(raw) == expected
 
 
-@pytest.mark.asyncio
-async def test_inject_credential_password_success():
-    telegram_id = 11223344
-    secret_password = "SuperSecurePassword123!"
+@pytest.mark.parametrize("url, domain, valid", [
+    ("https://vercel.com/login", "vercel.com", True),
+    ("https://www.vercel.com/login", "vercel.com", True),
+    ("https://auth.api.vercel.com/login", "vercel.com", True),
+    ("https://evil-vercel.com", "vercel.com", False),
+    ("https://vercel.com.attacker.com", "vercel.com", False),
+    ("http://vercel.com", "vercel.com", False),
+    ("http://localhost:3000/login", "localhost", True),
+    ("http://127.0.0.1:8000", "127.0.0.1", True),
+    ("http://[::1]:8000", "[::1]", True),
+    ("http://0.0.0.0:8000", "0.0.0.0", False),
+    ("file:///etc/passwd", "localhost", False),
+    ("javascript:alert(1)", "vercel.com", False),
+    ("", "vercel.com", False), ("https://vercel.com", "", False),
+])
+def test_validate_origin_rules(url, domain, valid):
+    assert validate_origin(url, domain)[0] is valid
 
-    async with async_session_factory() as session:
-        user, _ = await UserRepository.get_or_create_by_telegram_id(session, telegram_id)
-        blob = encrypt_secret(secret_password, settings.vault_key_bytes)
-        await CredentialRepository.add_or_update_credential(
-            session,
-            user_id=user.id,
-            site_domain="vercel.com",
-            auth_type="password",
-            encrypted_blob=blob,
-            username_or_identifier="admin@vercel.com",
-        )
-        await session.commit()
 
-    controller = SecureController(user_id=user.id)
+def test_controller_action_registration():
+    actions = SecureController().registry.registry.actions
+    assert "request_domain_credentials" in actions
+    assert "input" in actions
+    assert "inject_credential" not in actions
+    assert "inject_totp" not in actions
 
-    # Mock BrowserSession and event_bus
-    mock_page = MagicMock()
-    mock_browser_session = MagicMock()
-    mock_browser_session.must_get_current_page = AsyncMock(return_value=mock_page)
-    mock_browser_session.get_current_page_url = AsyncMock(return_value="https://vercel.com/login")
-    mock_browser_session.event_bus = MagicMock()
-    mock_browser_session.event_bus.dispatch = MagicMock(return_value=None)
 
-    # Retrieve and execute action
-    inject_fn = controller.registry.registry.actions["inject_credential"].function
-    result = await inject_fn(slot="password", domain="vercel.com", browser_session=mock_browser_session)
-
-    # Verify native CDP TypeTextEvent was dispatched on event_bus with is_sensitive=True
-    mock_browser_session.event_bus.dispatch.assert_called_once()
-    dispatched_event = mock_browser_session.event_bus.dispatch.call_args[0][0]
-    assert isinstance(dispatched_event, TypeTextEvent)
-    assert dispatched_event.text == secret_password
-    assert dispatched_event.is_sensitive is True
-    assert dispatched_event.sensitive_key_name == "password"
-
-    # Verify result content never leaks the password
+async def test_cached_domain_loads_all_placeholders_without_typing():
+    user = await vault_user([("password", "VerySecretPassword"), ("totp_seed", "JBSWY3DPEHPK3PXP"), ("api_key", "secret-key")])
+    shared = {}
+    controller = SecureController(telegram_id=user.telegram_id, sensitive_data=shared)
+    browser = browser_at()
+    result = await request_action(controller)(domain="https://www.vercel.com/login", browser_session=browser)
     assert result.error is None
-    assert "[SUCCESS] Password" in result.extracted_content
-    assert secret_password not in result.extracted_content
+    assert controller.sensitive_data is shared
+    assert shared["https://*.vercel.com"] == {
+        "vercel_user": "admin@example.com", "vercel_pass": "VerySecretPassword",
+        "vercel_bu_2fa_code": "JBSWY3DPEHPK3PXP", "vercel_api_key": "secret-key",
+    }
+    assert "<secret>vercel_pass</secret>" in result.extracted_content
+    assert "VerySecretPassword" not in result.model_dump_json()
+    assert "JBSWY3DPEHPK3PXP" not in result.model_dump_json()
+    assert set(browser.browser_profile.allowed_domains) == {"github.com", "*.github.com"}
+    browser.event_bus.dispatch.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_inject_credential_with_element_index():
-    """Verify targeted keystroke injection using element index (Step 4 Component 1)."""
-    telegram_id = 11223355
-    secret_password = "TargetedElementPassword456!"
-
-    async with async_session_factory() as session:
-        user, _ = await UserRepository.get_or_create_by_telegram_id(session, telegram_id)
-        blob = encrypt_secret(secret_password, settings.vault_key_bytes)
-        await CredentialRepository.add_or_update_credential(
-            session,
-            user_id=user.id,
-            site_domain="vercel.com",
-            auth_type="password",
-            encrypted_blob=blob,
-        )
-        await session.commit()
-
+async def test_credential_request_leaves_navigation_open():
+    user = await vault_user([("password", "private")])
+    browser = browser_at()
+    browser.browser_profile.allowed_domains = None
     controller = SecureController(user_id=user.id)
-
-    mock_page = MagicMock()
-    target_node = make_test_dom_node(index=7, tag="input", backend_id=505)
-
-    mock_browser_session = MagicMock()
-    mock_browser_session.must_get_current_page = AsyncMock(return_value=mock_page)
-    mock_browser_session.get_current_page_url = AsyncMock(return_value="https://vercel.com/login")
-    mock_browser_session.get_element_by_index = AsyncMock(return_value=target_node)
-    mock_browser_session.event_bus = MagicMock()
-    mock_browser_session.event_bus.dispatch = MagicMock(return_value=None)
-
-    inject_fn = controller.registry.registry.actions["inject_credential"].function
-    result = await inject_fn(
-        slot="password",
-        domain="vercel.com",
-        index=7,
-        browser_session=mock_browser_session,
-    )
-
-    mock_browser_session.get_element_by_index.assert_called_once_with(7)
-    mock_browser_session.event_bus.dispatch.assert_called_once()
-    dispatched = mock_browser_session.event_bus.dispatch.call_args[0][0]
-    assert dispatched.node.backend_node_id == target_node.backend_node_id
-    assert dispatched.node.node_name == target_node.node_name
-    assert dispatched.text == secret_password
+    result = await request_action(controller)(domain="vercel.com", browser_session=browser)
     assert result.error is None
+    assert browser.browser_profile.allowed_domains is None
 
 
-@pytest.mark.asyncio
-async def test_inject_credential_missing_element_index_fails_closed():
-    """Verify that targeting an invalid or expired element index fails closed immediately."""
-    telegram_id = 11223366
-    async with async_session_factory() as session:
-        user, _ = await UserRepository.get_or_create_by_telegram_id(session, telegram_id)
-        blob = encrypt_secret("some_pass", settings.vault_key_bytes)
-        await CredentialRepository.add_or_update_credential(
-            session,
-            user_id=user.id,
-            site_domain="vercel.com",
-            auth_type="password",
-            encrypted_blob=blob,
-        )
-        await session.commit()
+async def test_origin_failure_never_reads_vault(monkeypatch):
+    lookup = AsyncMock()
+    monkeypatch.setattr(CredentialRepository, "get_credentials_for_domain", lookup)
+    controller = SecureController(user_id=uuid.uuid4())
+    result = await request_action(controller)(domain="vercel.com", browser_session=browser_at("https://evil-vercel.com"))
+    assert "Security violation" in result.error
+    lookup.assert_not_awaited()
+    assert controller.sensitive_data == {}
 
+
+async def test_revalidates_origin_before_publishing():
+    user = await vault_user([("password", "private")])
     controller = SecureController(user_id=user.id)
-
-    mock_page = MagicMock()
-    mock_browser_session = MagicMock()
-    mock_browser_session.must_get_current_page = AsyncMock(return_value=mock_page)
-    mock_browser_session.get_current_page_url = AsyncMock(return_value="https://vercel.com/login")
-    # Element index 99 does not exist on page
-    mock_browser_session.get_element_by_index = AsyncMock(return_value=None)
-    mock_browser_session.event_bus = MagicMock()
-
-    inject_fn = controller.registry.registry.actions["inject_credential"].function
-    result = await inject_fn(
-        slot="password",
-        domain="vercel.com",
-        index=99,
-        browser_session=mock_browser_session,
-    )
-
-    assert result.error is not None
-    assert "Element index 99 not found on page" in result.error
-    mock_browser_session.event_bus.dispatch.assert_not_called()
+    browser = browser_at()
+    browser.get_current_page_url.side_effect = ["https://vercel.com", "https://attacker.com"]
+    result = await request_action(controller)(domain="vercel.com", browser_session=browser)
+    assert "Page changed origin" in result.error
+    assert controller.sensitive_data == {}
 
 
-@pytest.mark.asyncio
-async def test_inject_credential_username():
-    telegram_id = 99881122
-    username = "my_user@company.com"
+async def test_unauthorized_user():
+    result = await request_action(SecureController())(domain="vercel.com", browser_session=browser_at())
+    assert "Unauthorized" in result.error
 
-    async with async_session_factory() as session:
-        user, _ = await UserRepository.get_or_create_by_telegram_id(session, telegram_id)
-        blob = encrypt_secret("some_pass", settings.vault_key_bytes)
-        await CredentialRepository.add_or_update_credential(
-            session,
-            user_id=user.id,
-            site_domain="github.com",
-            auth_type="password",
-            encrypted_blob=blob,
-            username_or_identifier=username,
-        )
-        await session.commit()
 
+async def test_no_browser_session():
+    result = await request_action(SecureController())(domain="vercel.com")
+    assert "No active browser" in result.error
+
+
+async def test_missing_credentials_without_task_context():
+    user = await vault_user()
+    result = await request_action(SecureController(user_id=user.id))(domain="vercel.com", browser_session=browser_at())
+    assert "WebApp" in result.error
+
+
+async def test_decryption_failure_does_not_publish_or_log_secret(caplog):
+    user = await vault_user()
+    async with async_session_factory() as db:
+        await CredentialRepository.add_or_update_credential(db, user.id, "vercel.com", "password", "CORRUPT_SECRET_BLOB")
+        await db.commit()
     controller = SecureController(user_id=user.id)
-
-    mock_page = MagicMock()
-    mock_browser_session = MagicMock()
-    mock_browser_session.must_get_current_page = AsyncMock(return_value=mock_page)
-    mock_browser_session.get_current_page_url = AsyncMock(return_value="https://github.com/login")
-    mock_browser_session.event_bus = MagicMock()
-    mock_browser_session.event_bus.dispatch = MagicMock(return_value=None)
-
-    inject_fn = controller.registry.registry.actions["inject_credential"].function
-    result = await inject_fn(slot="username", domain="github.com", browser_session=mock_browser_session)
-
-    mock_browser_session.event_bus.dispatch.assert_called_once()
-    dispatched = mock_browser_session.event_bus.dispatch.call_args[0][0]
-    assert dispatched.text == username
-    assert dispatched.is_sensitive is True
-    assert dispatched.sensitive_key_name == "username"
-    assert "[SUCCESS] Username" in result.extracted_content
+    result = await request_action(controller)(domain="vercel.com", browser_session=browser_at())
+    assert "Failed to decrypt" in result.error
+    assert controller.sensitive_data == {}
+    assert "CORRUPT_SECRET_BLOB" not in caplog.text
 
 
-@pytest.mark.asyncio
-async def test_inject_credential_missing_domain_returns_error():
-    controller = SecureController(user_id="00000000-0000-0000-0000-000000000001")
+async def test_missing_credentials_webapp_roundtrip(async_client, monkeypatch):
+    monkeypatch.setattr(settings, "COMPANION_BASE_URL", "https://wilco.example/companion")
+    user = await vault_user()
+    task = TaskRecord(user_id=user.telegram_id, chat_id=user.telegram_id, prompt="Login to vercel.com")
+    status = SimpleNamespace(update=AsyncMock())
+    shared = {}
+    controller = SecureController(user_id=user.id, task=task, status_manager=status, sensitive_data=shared)
+    browser = browser_at()
+    pending_seen = asyncio.Event()
+    urls = []
 
-    mock_page = MagicMock()
-    mock_browser_session = MagicMock()
-    mock_browser_session.must_get_current_page = AsyncMock(return_value=mock_page)
-    mock_browser_session.get_current_page_url = AsyncMock(return_value="https://nonexistent.org/login")
-
-    inject_fn = controller.registry.registry.actions["inject_credential"].function
-    result = await inject_fn(slot="password", domain="nonexistent.org", browser_session=mock_browser_session)
-
-    assert result.error is not None
-    assert "No stored credentials found" in result.error
-
-
-@pytest.mark.asyncio
-async def test_inject_credential_phishing_origin_mismatch_rejected():
-    """Verify that credentials are NEVER injected into a phishing site with mismatched origin."""
-    telegram_id = 77889900
-    secret_password = "SecretPasswordToProtect!"
-
-    async with async_session_factory() as session:
-        user, _ = await UserRepository.get_or_create_by_telegram_id(session, telegram_id)
-        blob = encrypt_secret(secret_password, settings.vault_key_bytes)
-        await CredentialRepository.add_or_update_credential(
-            session,
-            user_id=user.id,
-            site_domain="vercel.com",
-            auth_type="password",
-            encrypted_blob=blob,
-            username_or_identifier="admin@vercel.com",
-        )
-        await session.commit()
-
-    controller = SecureController(user_id=user.id)
-
-    mock_page = MagicMock()
-    mock_browser_session = MagicMock()
-    mock_browser_session.must_get_current_page = AsyncMock(return_value=mock_page)
-    # Active page is on a phishing site pretending to be vercel
-    mock_browser_session.get_current_page_url = AsyncMock(return_value="https://evil-phishing-vercel.com/login")
-    mock_browser_session.event_bus = MagicMock()
-
-    inject_fn = controller.registry.registry.actions["inject_credential"].function
-    # LLM requests vercel.com credentials while on phishing domain
-    result = await inject_fn(slot="password", domain="vercel.com", browser_session=mock_browser_session)
-
-    # Must be blocked by origin verification
-    assert result.error is not None
-    assert "Security violation: Origin verification failed" in result.error
-    assert "does not match target domain" in result.error
-
-    # Ensure keystrokes were NEVER dispatched
-    mock_browser_session.event_bus.dispatch.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_inject_credential_insecure_http_rejected():
-    """Verify that credentials are rejected if the page is on insecure HTTP (remote domain)."""
-    telegram_id = 33445566
-    async with async_session_factory() as session:
-        user, _ = await UserRepository.get_or_create_by_telegram_id(session, telegram_id)
-        blob = encrypt_secret("some_pass", settings.vault_key_bytes)
-        await CredentialRepository.add_or_update_credential(
-            session,
-            user_id=user.id,
-            site_domain="github.com",
-            auth_type="password",
-            encrypted_blob=blob,
-        )
-        await session.commit()
-
-    controller = SecureController(user_id=user.id)
-
-    mock_page = MagicMock()
-    mock_browser_session = MagicMock()
-    mock_browser_session.must_get_current_page = AsyncMock(return_value=mock_page)
-    mock_browser_session.get_current_page_url = AsyncMock(return_value="http://github.com/login")
-    mock_browser_session.event_bus = MagicMock()
-
-    inject_fn = controller.registry.registry.actions["inject_credential"].function
-    result = await inject_fn(slot="password", domain="github.com", browser_session=mock_browser_session)
-
-    assert result.error is not None
-    assert "Insecure HTTP scheme rejected" in result.error
-    mock_browser_session.event_bus.dispatch.assert_not_called()
+    async def update(record, **kwargs):
+        if record.state == TaskState.NEEDS_INPUT:
+            urls.append(record.metadata["companion_url"])
+            pending_seen.set()
+    status.update.side_effect = update
+    action_task = asyncio.create_task(request_action(controller)(domain="vercel.com", browser_session=browser))
+    try:
+        await asyncio.wait_for(pending_seen.wait(), 5)
+        pending = task_registry.get_credential_input(task.task_id)
+        assert pending.is_pending
+        link = urlsplit(urls[0])
+        response = await async_client.get(f"{link.path}?{link.query}", follow_redirects=True)
+        assert response.status_code == 200
+        assert 'id="password" type="password"' in response.text
+        assert 'id="username"' in response.text
+        assert "vercel.com" in response.text
+        response = await async_client.post(f"/api/tasks/{task.task_id}/resolve-input", json={
+            "credentials": {"vercel.com": "  exact password  "}, "username": "me@example.com",
+            "totp_seed": "JBSW Y3DP EHPK 3PXP",
+        })
+        assert response.status_code == 200
+        result = await asyncio.wait_for(action_task, 5)
+        assert result.error is None
+        assert shared["https://*.vercel.com"]["vercel_pass"] == "  exact password  "
+        assert shared["https://*.vercel.com"]["vercel_user"] == "me@example.com"
+        assert shared["https://*.vercel.com"]["vercel_bu_2fa_code"] == "JBSWY3DPEHPK3PXP"
+        assert task.state == TaskState.RUNNING
+        assert task_registry.get_credential_input(task.task_id) is None
+        assert "companion_url" not in task.metadata
+        async with async_session_factory() as db:
+            credentials = await CredentialRepository.get_credentials_for_domain(db, user.id, "vercel.com")
+            password = next(c for c in credentials if c.auth_type == "password")
+            assert password.encrypted_blob != "  exact password  "
+            assert decrypt_secret(password.encrypted_blob, settings.vault_key_bytes) == "  exact password  "
+            saved = await TaskRepository.get_task(db, task.task_id)
+            assert saved.state == TaskState.RUNNING
+            assert "exact password" not in saved.model_dump_json()
+        token = parse_qs(link.query)["token"][0]
+        async with async_session_factory() as db:
+            assert await IdentityTokenRepository.validate_and_consume_token(db, token) is None
+    finally:
+        if not action_task.done():
+            action_task.cancel()
+            await asyncio.gather(action_task, return_exceptions=True)
 
 
-@pytest.mark.asyncio
-async def test_inject_totp_success():
-    telegram_id = 55443322
-    totp_seed = "JBSWY3DPEHPK3PXP"
-
-    async with async_session_factory() as session:
-        user, _ = await UserRepository.get_or_create_by_telegram_id(session, telegram_id)
-        blob = encrypt_secret(totp_seed, settings.vault_key_bytes)
-        await CredentialRepository.add_or_update_credential(
-            session,
-            user_id=user.id,
-            site_domain="vercel.com",
-            auth_type="totp_seed",
-            encrypted_blob=blob,
-        )
-        await session.commit()
-
-    controller = SecureController(user_id=user.id)
-
-    mock_page = MagicMock()
-    mock_browser_session = MagicMock()
-    mock_browser_session.must_get_current_page = AsyncMock(return_value=mock_page)
-    mock_browser_session.get_current_page_url = AsyncMock(return_value="https://vercel.com/login")
-    mock_browser_session.event_bus = MagicMock()
-    mock_browser_session.event_bus.dispatch = MagicMock(return_value=None)
-
-    inject_totp_fn = controller.registry.registry.actions["inject_totp"].function
-    result = await inject_totp_fn(domain="vercel.com", browser_session=mock_browser_session)
-
-    assert result.error is None
-    assert "[SUCCESS] 6-digit TOTP code" in result.extracted_content
-    assert totp_seed not in result.extracted_content
-
-    # Check that typed code was dispatched via event_bus
-    mock_browser_session.event_bus.dispatch.assert_called_once()
-    dispatched = mock_browser_session.event_bus.dispatch.call_args[0][0]
-    assert isinstance(dispatched, TypeTextEvent)
-    assert len(dispatched.text) == 6
-    assert dispatched.text.isdigit()
-    assert dispatched.is_sensitive is True
+async def test_credential_timeout_is_terminal_and_cleans_up(monkeypatch):
+    monkeypatch.setattr("app.browser.controller.CREDENTIAL_INPUT_TIMEOUT", 0.05)
+    user = await vault_user()
+    task = TaskRecord(user_id=user.telegram_id, chat_id=user.telegram_id, prompt="Login")
+    status = SimpleNamespace(update=AsyncMock())
+    controller = SecureController(user_id=user.id, task=task, status_manager=status)
+    result = await request_action(controller)(domain="vercel.com", browser_session=browser_at())
+    assert "timed out" in result.error
+    assert task.state == TaskState.FAILED
+    assert task_registry.get_credential_input(task.task_id) is None
+    assert "companion_url" not in task.metadata
+    assert controller.sensitive_data == {}
+    async with async_session_factory() as db:
+        assert (await TaskRepository.get_task(db, task.task_id)).state == TaskState.FAILED
 
 
-@pytest.mark.asyncio
-async def test_inject_totp_post_drift_navigation_abort():
-    """Verify that if page navigates away during TOTP computation, injection is aborted."""
-    telegram_id = 44556677
-    totp_seed = "JBSWY3DPEHPK3PXP"
+async def test_cancelling_wait_cleans_up():
+    user = await vault_user()
+    task = TaskRecord(user_id=user.telegram_id, chat_id=user.telegram_id, prompt="Login")
+    ready = asyncio.Event()
+    status = SimpleNamespace(update=AsyncMock(side_effect=lambda *args, **kwargs: ready.set()))
+    controller = SecureController(user_id=user.id, task=task, status_manager=status)
+    running = asyncio.create_task(request_action(controller)(domain="vercel.com", browser_session=browser_at()))
+    await asyncio.wait_for(ready.wait(), 5)
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert task.state == TaskState.FAILED
+    assert task_registry.get_credential_input(task.task_id) is None
+    assert "companion_url" not in task.metadata
 
-    async with async_session_factory() as session:
-        user, _ = await UserRepository.get_or_create_by_telegram_id(session, telegram_id)
-        blob = encrypt_secret(totp_seed, settings.vault_key_bytes)
-        await CredentialRepository.add_or_update_credential(
-            session,
-            user_id=user.id,
-            site_domain="vercel.com",
-            auth_type="totp_seed",
-            encrypted_blob=blob,
-        )
-        await session.commit()
 
-    controller = SecureController(user_id=user.id)
+async def test_first_task_can_provision_webapp_identity():
+    task = TaskRecord(user_id=uuid.uuid4().int % 10**12, chat_id=1, prompt="Login")
+    controller = SecureController(task=task)
+    user_id = await controller._resolve_user_id()
+    assert user_id is not None
+    async with async_session_factory() as db:
+        assert (await UserRepository.get_by_telegram_id(db, task.user_id)).id == user_id
 
-    mock_page = MagicMock()
-    mock_browser_session = MagicMock()
-    mock_browser_session.must_get_current_page = AsyncMock(return_value=mock_page)
 
-    # First call before TOTP: valid vercel.com
-    # Second call after TOTP sleep: hijacked / navigated to attacker site
-    mock_browser_session.get_current_page_url = AsyncMock(
-        side_effect=["https://vercel.com/login", "https://attacker-hijack.com/login"]
-    )
-    mock_browser_session.event_bus = MagicMock()
+async def test_submission_crossing_deadline_cannot_overwrite_failed_state(async_client, monkeypatch):
+    from app.companion.auth import SESSION_COOKIE_NAME, create_session_token
 
-    inject_totp_fn = controller.registry.registry.actions["inject_totp"].function
-    result = await inject_totp_fn(domain="vercel.com", browser_session=mock_browser_session)
+    monkeypatch.setattr("app.browser.controller.CREDENTIAL_INPUT_TIMEOUT", 0.2)
+    user = await vault_user()
+    task = TaskRecord(user_id=user.telegram_id, chat_id=user.telegram_id, prompt="Login")
+    ready = asyncio.Event()
+    saving = asyncio.Event()
+    release_save = asyncio.Event()
+    status = SimpleNamespace(update=AsyncMock(side_effect=lambda *args, **kwargs: ready.set()))
+    original_save = TaskRepository.save_task
 
-    assert result.error is not None
-    assert "Security violation: Page navigated or changed origin during TOTP generation" in result.error
-    mock_browser_session.event_bus.dispatch.assert_not_called()
+    async def delayed_save(db, record):
+        if record.task_id == task.task_id and record.state == TaskState.RUNNING:
+            saving.set()
+            await release_save.wait()
+        return await original_save(db, record)
+
+    monkeypatch.setattr(TaskRepository, "save_task", delayed_save)
+    controller = SecureController(user_id=user.id, task=task, status_manager=status)
+    running = asyncio.create_task(request_action(controller)(domain="vercel.com", browser_session=browser_at()))
+    submission = None
+    try:
+        await asyncio.wait_for(ready.wait(), 5)
+        async_client.cookies.set(SESSION_COOKIE_NAME, create_session_token(user.id, user.telegram_id))
+        submission = asyncio.create_task(async_client.post(
+            f"/api/tasks/{task.task_id}/resolve-input", json={"credentials": {"vercel.com": "late-password"}},
+        ))
+        await asyncio.wait_for(saving.wait(), 5)
+        # The controller times out while the submission holds the persistence lock.
+        await asyncio.sleep(0.25)
+        release_save.set()
+        response, result = await asyncio.wait_for(asyncio.gather(submission, running), 5)
+        assert response.status_code == 409
+        assert "timed out" in result.error
+        assert task.state == TaskState.FAILED
+        async with async_session_factory() as db:
+            assert (await TaskRepository.get_task(db, task.task_id)).state == TaskState.FAILED
+    finally:
+        release_save.set()
+        for future in (running, submission):
+            if future is not None and not future.done():
+                future.cancel()
+                await asyncio.gather(future, return_exceptions=True)

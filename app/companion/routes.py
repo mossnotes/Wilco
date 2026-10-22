@@ -1,12 +1,12 @@
-from datetime import datetime, timezone
+import asyncio
 import logging
 from pathlib import Path
-import re
-from typing import Dict, List, Literal, Optional
+from typing import Dict, Literal, Optional
 import uuid
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response, status
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,7 +28,9 @@ from app.db.repository import (
     UserRepository,
 )
 from app.security.totp import normalize_totp_seed
+from app.security.origins import clean_domain
 from app.security.vault import decrypt_secret, encrypt_secret, mask_secret
+from app.tasks.registry import task_registry
 from app.tasks.state import TaskState
 
 logger = logging.getLogger(__name__)
@@ -41,15 +43,6 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 companion_router = APIRouter(prefix="/companion", tags=["companion"])
 vault_api_router = APIRouter(prefix="/api/vault", tags=["vault"])
 tasks_api_router = APIRouter(prefix="/api/tasks", tags=["tasks"])
-
-
-def clean_domain(raw_domain: str) -> str:
-    """Normalizes input domain/URL into a clean hostname (e.g. 'https://vercel.com/login' -> 'vercel.com')."""
-    domain = raw_domain.strip().lower()
-    domain = re.sub(r"^https?://", "", domain)
-    domain = re.sub(r"^www\.", "", domain)
-    domain = domain.split("/")[0].split(":")[0]
-    return domain
 
 
 # ---------------------------------------------------------
@@ -67,6 +60,8 @@ class ResolveInputRequest(BaseModel):
     approved: bool = True
     user_input: Optional[str] = None
     credentials: Optional[Dict[str, str]] = None
+    username: Optional[str] = Field(default=None, max_length=320)
+    totp_seed: Optional[str] = Field(default=None, max_length=1024)
 
 
 # ---------------------------------------------------------
@@ -78,6 +73,7 @@ async def link_identity(
     request: Request,
     response: Response,
     token: str = Query(..., min_length=1),
+    task_id: Optional[str] = Query(default=None),
     session: AsyncSession = Depends(get_db),
 ):
     """
@@ -99,18 +95,31 @@ async def link_identity(
     # Create encrypted session cookie
     session_token = create_session_token(user.id, user.telegram_id)
 
-    resp = templates.TemplateResponse(
-        request=request,
-        name="link.html",
-        context={"telegram_id": telegram_id},
-    )
+    if task_id:
+        task = await TaskRepository.get_task(session, task_id)
+        if not task or task.user_id != telegram_id:
+            raise HTTPException(status_code=403, detail="Access denied to this task")
+        query = {"task_id": task_id}
+        if target_domain := task.metadata.get("target_domain"):
+            query["domain"] = target_domain
+        resp = RedirectResponse(url=f"/companion/input?{urlencode(query)}", status_code=303)
+    else:
+        resp = templates.TemplateResponse(
+            request=request,
+            name="link.html",
+            context={"telegram_id": telegram_id},
+        )
     resp.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_token,
         httponly=True,
         samesite="lax",
         max_age=7 * 86400,
+        secure=request.url.scheme == "https",
     )
+    await session.commit()
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Referrer-Policy"] = "no-referrer"
     return resp
 
 
@@ -179,11 +188,25 @@ async def task_needs_input_page(
     if task.user_id != user.telegram_id:
         raise HTTPException(status_code=403, detail="Access denied to this task")
 
-    return templates.TemplateResponse(
+    requested_domain = request.query_params.get("domain")
+    target_domain = task.metadata.get("target_domain") or (clean_domain(requested_domain) if requested_domain else None)
+    if requested_domain and clean_domain(requested_domain) != target_domain:
+        raise HTTPException(status_code=400, detail="Credential domain does not match the pending request")
+    if task.state != TaskState.NEEDS_INPUT:
+        raise HTTPException(status_code=409, detail="This task is no longer waiting for input")
+    if task.metadata.get("target_domain"):
+        pending = task_registry.get_credential_input(task_id)
+        if not pending or not pending.is_pending:
+            raise HTTPException(status_code=409, detail="This credential request has expired")
+
+    response = templates.TemplateResponse(
         request=request,
         name="needs_input.html",
-        context={"task": task, "telegram_id": user.telegram_id},
+        context={"task": task, "telegram_id": user.telegram_id, "target_domain": target_domain},
     )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
 
 # ---------------------------------------------------------
@@ -312,46 +335,73 @@ async def resolve_task_input(
     """
     Submits user input or manual confirmation for a paused task in NEEDS_INPUT state.
     """
-    task = await TaskRepository.get_task(session, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+    pending = task_registry.get_credential_input(task_id)
+    async with pending.lock if pending else asyncio.Lock():
+        task = await TaskRepository.get_task(session, task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        if task.user_id != user.telegram_id:
+            raise HTTPException(status_code=403, detail="Access denied to this task")
+        if pending:
+            task = pending.task.model_copy(deep=True)
+        if task.state != TaskState.NEEDS_INPUT:
+            raise HTTPException(status_code=400, detail=f"Task is in state '{task.state.value}', not 'needs_input'")
 
-    if task.user_id != user.telegram_id:
-        raise HTTPException(status_code=403, detail="Access denied to this task")
-
-    if task.state != TaskState.NEEDS_INPUT:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Task is in state '{task.state.value}', not 'needs_input'",
-        )
-
-    # If credentials were provided in resolution payload, vault them
-    if req.credentials:
-        for domain, secret in req.credentials.items():
-            clean_dom = clean_domain(domain)
-            blob = encrypt_secret(secret, settings.vault_key_bytes)
-            await CredentialRepository.add_or_update_credential(
-                session,
-                user_id=user.id,
-                site_domain=clean_dom,
-                auth_type="password",
-                encrypted_blob=blob,
+        target_domain = task.metadata.get("target_domain")
+        if target_domain and (not pending or not pending.is_pending):
+            raise HTTPException(status_code=409, detail="This credential request has expired")
+        if req.approved:
+            # Validate the entire payload before performing any vault writes.
+            credentials = {}
+            for domain, secret in (req.credentials or {}).items():
+                domain = clean_domain(domain)
+                if not domain or not secret:
+                    raise HTTPException(status_code=400, detail="A valid domain and nonempty password are required")
+                if target_domain and domain != target_domain:
+                    raise HTTPException(status_code=400, detail="Credential domain does not match the pending request")
+                credentials[domain] = secret
+            if target_domain and set(credentials) != {target_domain}:
+                raise HTTPException(status_code=400, detail="Provide credentials for the requested domain in the WebApp")
+            normalized_seed = None
+            if req.totp_seed:
+                if len(credentials) != 1:
+                    raise HTTPException(status_code=400, detail="TOTP seed requires exactly one credential domain")
+                try:
+                    normalized_seed = normalize_totp_seed(req.totp_seed)
+                except Exception:
+                    raise HTTPException(status_code=400, detail="Invalid Base32 TOTP seed") from None
+            for domain, secret in credentials.items():
+                await CredentialRepository.add_or_update_credential(
+                    session, user_id=user.id, site_domain=domain, auth_type="password",
+                    encrypted_blob=encrypt_secret(secret, settings.vault_key_bytes),
+                    username_or_identifier=req.username,
+                )
+                if normalized_seed:
+                    await CredentialRepository.add_or_update_credential(
+                        session, user_id=user.id, site_domain=domain, auth_type="totp_seed",
+                        encrypted_blob=encrypt_secret(normalized_seed, settings.vault_key_bytes),
+                    )
+            task.transition_to(TaskState.RUNNING, status_message="Secure credentials received. Resuming task." if credentials else "Resumed with user input.")
+            if not credentials:
+                task.metadata["resolved_input"] = req.user_input
+        else:
+            task.transition_to(
+                TaskState.FAILED, status_message="Task cancelled by user via companion app.", error="Cancelled by user",
             )
-
-    if req.approved:
-        task.transition_to(
-            TaskState.RUNNING,
-            status_message=f"Resumed with user input: {req.user_input[:40] if req.user_input else 'Approved'}",
-        )
-        task.metadata["resolved_input"] = req.user_input
-    else:
-        task.transition_to(
-            TaskState.FAILED,
-            status_message="Task cancelled by user via companion app.",
-            error="Cancelled by user",
-        )
-
-    await TaskRepository.save_task(session, task)
+        if pending and not pending.is_pending:
+            raise HTTPException(status_code=409, detail="This credential request has expired")
+        for key in ("target_domain", "credential_input_deadline", "companion_url"):
+            task.metadata.pop(key, None)
+        await TaskRepository.save_task(session, task)
+        # Commit before waking the browser: its next vault read uses another session.
+        await session.commit()
+        if pending:
+            if not pending.is_pending:
+                raise HTTPException(status_code=409, detail="This credential request has expired")
+            live = pending.task
+            live.metadata = task.metadata
+            live.transition_to(task.state, status_message=task.status_message, error=task.error)
+            pending.event.set()
 
     return {
         "status": "resolved",

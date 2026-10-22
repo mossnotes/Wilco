@@ -1,11 +1,32 @@
 import asyncio
+from dataclasses import dataclass, field
 import logging
+import time
 from typing import Any, Dict, Optional, Tuple
 
 from app.config import settings
 from app.tasks.state import TaskRecord, TaskState
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CredentialInputRequest:
+    """In-process rendezvous between the browser action and authenticated WebApp."""
+
+    task: TaskRecord
+    domain: str
+    deadline: float
+    event: asyncio.Event = field(default_factory=asyncio.Event)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    @property
+    def is_pending(self) -> bool:
+        return (
+            self.task.state == TaskState.NEEDS_INPUT
+            and not self.event.is_set()
+            and time.time() < self.deadline
+        )
 
 
 class ActiveTaskRegistry:
@@ -24,6 +45,20 @@ class ActiveTaskRegistry:
         self._active_by_chat: Dict[int, Tuple[TaskRecord, asyncio.Task, Any]] = {}
         # Mapping task_id -> (TaskRecord, asyncio.Task, status_manager)
         self._active_by_id: Dict[str, Tuple[TaskRecord, asyncio.Task, Any]] = {}
+        self._credential_inputs: Dict[str, CredentialInputRequest] = {}
+
+    def register_credential_input(self, task: TaskRecord, domain: str, deadline: float) -> CredentialInputRequest:
+        if task.task_id in self._credential_inputs:
+            raise RuntimeError("A credential request is already pending for this task.")
+        pending = CredentialInputRequest(task=task, domain=domain, deadline=deadline)
+        self._credential_inputs[task.task_id] = pending
+        return pending
+
+    def get_credential_input(self, task_id: str) -> Optional[CredentialInputRequest]:
+        return self._credential_inputs.get(task_id)
+
+    def clear_credential_input(self, task_id: str) -> None:
+        self._credential_inputs.pop(task_id, None)
 
     @property
     def semaphore(self) -> asyncio.Semaphore:
