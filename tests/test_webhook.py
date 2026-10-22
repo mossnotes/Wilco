@@ -3,7 +3,19 @@ import pytest
 from httpx import AsyncClient
 
 from app.config import settings
+from app.bot.message_router import MessageDecision
 from app.bot.setup import set_bot
+
+
+@pytest.fixture(autouse=True)
+def mock_message_router():
+    """Keep webhook tests independent of external model calls."""
+    with patch(
+        "app.bot.handlers.route_message",
+        new_callable=AsyncMock,
+        return_value=MessageDecision(route="browser", reply=""),
+    ) as mock_route:
+        yield mock_route
 
 
 @pytest.fixture(autouse=True)

@@ -4,6 +4,7 @@ import pytest_asyncio
 from aiogram.types import Chat, Message, User as TelegramUser
 
 from app.bot.handlers import handle_cancel, handle_start, handle_text_message
+from app.bot.message_router import MessageDecision
 from app.db.engine import async_session_factory, init_db
 from app.db.repository import IdentityTokenRepository, UserRepository
 from app.tasks.registry import task_registry
@@ -13,6 +14,16 @@ from app.tasks.state import TaskRecord, TaskState
 @pytest_asyncio.fixture(autouse=True)
 async def setup_test_db():
     await init_db()
+
+
+@pytest.fixture(autouse=True)
+def mock_message_router():
+    with patch(
+        "app.bot.handlers.route_message",
+        new_callable=AsyncMock,
+        return_value=MessageDecision(route="browser", reply=""),
+    ) as mock_route:
+        yield mock_route
 
 
 def make_mock_message(text: str, user_id: int = 123456, chat_id: int = 789012) -> Message:
@@ -60,7 +71,7 @@ async def test_handle_start_generates_pairing_token():
 
 
 @pytest.mark.asyncio
-async def test_pasted_secret_interceptor_deletes_message():
+async def test_pasted_secret_interceptor_deletes_message(mock_message_router):
     secret_text = "Here is my secret API key: sk-ant-api03-abcdef1234567890abcdef1234567890 please login"
     msg = make_mock_message(secret_text, user_id=112233, chat_id=112233)
 
@@ -77,6 +88,7 @@ async def test_pasted_secret_interceptor_deletes_message():
 
     # 3. No task registered in registry
     assert task_registry.get_by_chat(112233) is None
+    mock_message_router.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -119,7 +131,7 @@ async def test_cancel_command_without_active_task():
 
 
 @pytest.mark.asyncio
-async def test_benign_prompt_starts_task():
+async def test_benign_prompt_starts_task(mock_message_router):
     chat_id = 44332211
     msg = make_mock_message("Search news on news.ycombinator.com", user_id=999, chat_id=chat_id)
 
@@ -136,4 +148,71 @@ async def test_benign_prompt_starts_task():
             task_rec, _, _ = active_entry
             assert task_rec.prompt == "Search news on news.ycombinator.com"
             assert task_rec.user_id == 999
+            mock_message_router.assert_awaited_once_with(
+                msg.text, request_id=f"telegram:{chat_id}:{msg.message_id}",
+            )
+            mock_run.assert_called_once_with(task_rec, active_entry[2], msg.bot)
+            await active_entry[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("browser_active", [False, True])
+async def test_direct_reply_does_not_create_browser_task(mock_message_router, browser_active):
+    msg = make_mock_message("Explain HTML tags")
+    reply = "<b> is an HTML tag; 2 < 3 & 4 > 3."
+    mock_message_router.return_value = MessageDecision(route="reply", reply=reply)
+
+    with (
+        patch("app.bot.handlers.async_session_factory") as mock_session,
+        patch("app.bot.handlers.StatusManager") as mock_status,
+        patch("app.bot.handlers.run_browser_task") as mock_run,
+        patch.object(task_registry, "get_by_chat", return_value=object() if browser_active else None),
+    ):
+        await handle_text_message(msg)
+
+    msg.answer.assert_awaited_once_with(reply, parse_mode=None)
+    mock_session.assert_not_called()
+    mock_status.assert_not_called()
+    mock_run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_browser_route_rejects_an_existing_browser_task(mock_message_router):
+    msg = make_mock_message("Check my Vercel deployments")
+    with (
+        patch.object(task_registry, "get_by_chat", return_value=object()),
+        patch("app.bot.handlers.run_browser_task") as mock_run,
+    ):
+        await handle_text_message(msg)
+
+    assert "A task is already running" in msg.answer.call_args.args[0]
+    mock_message_router.assert_awaited_once()
+    mock_run.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [RuntimeError("provider failure"), TimeoutError()])
+async def test_routing_failure_reports_error_without_starting_browser(mock_message_router, error):
+    mock_message_router.side_effect = error
+    msg = make_mock_message("Hello")
+    with (
+        patch("app.bot.handlers.async_session_factory") as mock_session,
+        patch("app.bot.handlers.run_browser_task") as mock_run,
+    ):
+        await handle_text_message(msg)
+
+    assert "Please try again" in msg.answer.call_args.args[0]
+    if isinstance(error, TimeoutError):
+        assert "model took too long" in msg.answer.call_args.args[0]
+    mock_session.assert_not_called()
+    mock_run.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["/unknown", "   "])
+async def test_commands_and_empty_messages_skip_routing(mock_message_router, text):
+    msg = make_mock_message(text)
+    await handle_text_message(msg)
+    mock_message_router.assert_not_awaited()
+    msg.answer.assert_not_awaited()
 

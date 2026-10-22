@@ -11,6 +11,7 @@ dependencies = [
     "browser-use>=0.13.9",
     "cryptography>=43.0.0",
     "fastapi>=0.148.0",
+    "google-genai>=1.65.0",
     "jinja2>=3.1.5",
     "playwright>=1.64.0",
     "pydantic-settings>=2.16.0",

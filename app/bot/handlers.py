@@ -4,6 +4,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 
+from app.bot.message_router import route_message
 from app.bot.status_manager import StatusManager
 from app.browser.runner import run_browser_task
 from app.config import settings
@@ -11,7 +12,7 @@ from app.db.engine import async_session_factory
 from app.db.repository import IdentityTokenRepository, TaskRepository, UserRepository
 from app.security.sanitizer import contains_sensitive_data
 from app.tasks.registry import task_registry
-from app.tasks.state import TaskRecord, TaskState
+from app.tasks.state import TaskRecord
 
 logger = logging.getLogger(__name__)
 router = Router(name="main_router")
@@ -103,7 +104,8 @@ async def handle_text_message(message: Message) -> None:
     
     Workflow:
     1. Pasted Secret Interceptor: Scans for API keys, passwords, and seeds. Deletes immediately if found.
-    2. Concurrency Check: Prevents overlapping task executions in the same chat.
+    2. LLM Routing: Replies directly or selects the existing browser task path.
+       Browser concurrency is checked only when a browser task is requested.
     3. TaskRecord Creation: Initializes state machine and persists to database.
     4. Throttled Status Card: Sends initial Telegram status card.
     5. Registry & Execution: Registers background task in task_registry and begins runner.
@@ -113,6 +115,8 @@ async def handle_text_message(message: Message) -> None:
         return
 
     text = message.text.strip()
+    if not text:
+        return
     chat_id = message.chat.id
     user_id = message.from_user.id if message.from_user else 0
 
@@ -133,15 +137,42 @@ async def handle_text_message(message: Message) -> None:
         await message.answer(warning_text)
         return
 
-    # 2. Concurrency check: check if task is already running in this chat
+    # 2. Decide whether this message needs a browser before creating any task.
+    request_id = f"telegram:{chat_id}:{message.message_id}"
+    routing_started = asyncio.get_running_loop().time()
+    try:
+        decision = await route_message(text, request_id=request_id)
+    except TimeoutError:
+        elapsed = asyncio.get_running_loop().time() - routing_started
+        logger.warning(
+            "Message routing timed out in chat %s after %.1fs "
+            "(provider=%s, model=%s, deadline=%ss)",
+            chat_id, elapsed, settings.LLM_PROVIDER, settings.LLM_MODEL,
+            settings.ROUTING_TIMEOUT_SECONDS,
+        )
+        await message.answer("The AI model took too long to respond. Please try again.")
+        return
+    except Exception as exc:
+        # Provider exceptions can contain request data; log only the error type.
+        logger.warning("Message routing failed in chat %s (%s)", chat_id, type(exc).__name__)
+        await message.answer("I couldn't process your message right now. Please try again.")
+        return
+
+    if decision.route == "reply":
+        await message.answer(decision.reply, parse_mode=None)
+        logger.info("Routing[%s] direct reply delivered", request_id)
+        return
+
+    # Allow direct replies while keeping the existing browser concurrency check.
     if task_registry.get_by_chat(chat_id):
+        logger.info("Routing[%s] browser handoff rejected: active task exists", request_id)
         await message.answer(
             "⚠️ A task is already running in this chat.\n"
             "Please wait for it to complete or send /cancel to stop it before starting another."
         )
         return
 
-    logger.info("Initiating task for user %s in chat %s: '%s'", user_id, chat_id, text)
+    logger.info("Routing[%s] starting browser task for user %s", request_id, user_id)
 
     # 3. Create persistent TaskRecord domain entity
     task = TaskRecord(
@@ -166,3 +197,4 @@ async def handle_text_message(message: Message) -> None:
     # 5. Launch background execution with registry tracking
     bg_task = asyncio.create_task(run_browser_task(task, status_manager, message.bot))
     task_registry.register(chat_id, task, bg_task, status_manager)
+    logger.info("Routing[%s] browser task registered task_id=%s", request_id, task.task_id)

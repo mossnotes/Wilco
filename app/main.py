@@ -12,10 +12,15 @@ from app.bot.setup import get_bot, get_dispatcher
 from app.db.engine import close_db, init_db
 
 logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    force=True,  # Replace browser-use's INFO-only root console handler.
 )
 logger = logging.getLogger("wilco")
+# Enable application DEBUG logs without enabling verbose SDK/HTTP payload logs.
+app_log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
+logging.getLogger("app").setLevel(app_log_level)
+logger.setLevel(app_log_level)
 
 
 @asynccontextmanager

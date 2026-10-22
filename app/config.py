@@ -1,7 +1,7 @@
 import base64
 import os
 from typing import Any, Literal
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Step 4 Security Hardening: Ensure telemetry is disabled before any browser_use modules load
@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     # LLM Provider Configuration
     LLM_PROVIDER: Literal["gemini", "openai", "anthropic"] = "gemini"
     LLM_MODEL: str = "gemini-3.8-flash"
+    ROUTING_TIMEOUT_SECONDS: float = Field(default=60, gt=0)
     GEMINI_API_KEY: str = ""
     GOOGLE_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
