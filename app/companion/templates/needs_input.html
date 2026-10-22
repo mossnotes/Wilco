@@ -31,7 +31,10 @@
 
     <!-- Response Form -->
     <div class="glass rounded-xl p-4 border border-slate-800">
-        <form id="resolve-form" onsubmit="submitResolution(event)" class="space-y-4">
+        <form id="resolve-form" onsubmit="submitResolution(event)" class="space-y-4"
+              data-task-id="{{ task.task_id }}"
+              data-target-domain="{{ target_domain | default('', true) }}"
+              data-deadline="{{ task.metadata.get('credential_input_deadline') or '' }}">
             {% if target_domain %}
             <div class="rounded-lg bg-slate-900 border border-slate-700 p-3">
                 <span class="text-xs text-slate-400">Credentials for</span>
@@ -71,9 +74,10 @@
 
 {% block scripts %}
 <script>
-    const taskId = {{ task.task_id | tojson }};
-    const targetDomain = {{ target_domain | default(none) | tojson }};
-    const deadline = {{ task.metadata.get('credential_input_deadline') | tojson }};
+    const form = document.getElementById('resolve-form');
+    const taskId = form.dataset.taskId;
+    const targetDomain = form.dataset.targetDomain;
+    const deadline = Number(form.dataset.deadline) || null;
     const countdown = document.getElementById('input-countdown');
     if (countdown && deadline) {
         function updateCountdown() {
