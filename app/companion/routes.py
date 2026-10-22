@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Dict, Literal, Optional
@@ -38,6 +39,9 @@ logger = logging.getLogger(__name__)
 # Template engine setup
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.globals["ui"] = json.loads(
+    (Path(__file__).parent / "ui_copy.json").read_text(encoding="utf-8")
+)
 
 # Routers
 companion_router = APIRouter(prefix="/companion", tags=["companion"])
@@ -72,7 +76,7 @@ class ResolveInputRequest(BaseModel):
 async def link_identity(
     request: Request,
     response: Response,
-    token: str = Query(..., min_length=1),
+    token: str = Query(default=""),
     task_id: Optional[str] = Query(default=None),
     session: AsyncSession = Depends(get_db),
 ):
@@ -85,7 +89,7 @@ async def link_identity(
         return templates.TemplateResponse(
             request=request,
             name="unauthorized.html",
-            context={"error": "Invalid or expired pairing token."},
+            context={},
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
@@ -98,7 +102,9 @@ async def link_identity(
     if task_id:
         task = await TaskRepository.get_task(session, task_id)
         if not task or task.user_id != telegram_id:
-            raise HTTPException(status_code=403, detail="Access denied to this task")
+            return templates.TemplateResponse(
+                request=request, name="unauthorized.html", context={}, status_code=403,
+            )
         query = {"task_id": task_id}
         if target_domain := task.metadata.get("target_domain"):
             query["domain"] = target_domain
@@ -107,7 +113,7 @@ async def link_identity(
         resp = templates.TemplateResponse(
             request=request,
             name="link.html",
-            context={"telegram_id": telegram_id},
+            context={},
         )
     resp.set_cookie(
         key=SESSION_COOKIE_NAME,
@@ -140,35 +146,23 @@ async def list_connected_accounts_page(
 
     creds = await CredentialRepository.get_credentials_for_user(session, user.id)
 
-    # Prepare view items with safe masking
-    view_credentials = []
-    for c in creds:
-        try:
-            decrypted = decrypt_secret(c.encrypted_blob, settings.vault_key_bytes)
-            masked = mask_secret(decrypted, is_api_key=(c.auth_type == "api_key"))
-        except Exception:
-            masked = "••••••••"
+    # The dashboard needs domains and internal row IDs, never decrypted secrets.
+    view_credentials = [{"id": str(c.id), "site_domain": c.site_domain} for c in creds]
 
-        view_credentials.append({
-            "id": str(c.id),
-            "site_domain": c.site_domain,
-            "auth_type": c.auth_type,
-            "username_or_identifier": c.username_or_identifier,
-            "masked_secret": masked,
-            "updated_at": c.updated_at.strftime("%Y-%m-%d %H:%M UTC"),
-        })
-
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        context={"credentials": view_credentials, "telegram_id": user.telegram_id},
+        context={"credentials": view_credentials},
     )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
 
 @companion_router.get("/input", response_class=HTMLResponse)
 async def task_needs_input_page(
     request: Request,
-    task_id: str = Query(...),
+    task_id: str = Query(default=""),
     session: AsyncSession = Depends(get_db),
     user: Optional[User] = Depends(get_current_user_optional),
 ):
@@ -183,26 +177,36 @@ async def task_needs_input_page(
 
     task = await TaskRepository.get_task(session, task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        return templates.TemplateResponse(
+            request=request, name="expired.html", context={}, status_code=404,
+        )
 
     if task.user_id != user.telegram_id:
-        raise HTTPException(status_code=403, detail="Access denied to this task")
+        return templates.TemplateResponse(
+            request=request, name="unauthorized.html", context={}, status_code=403,
+        )
 
     requested_domain = request.query_params.get("domain")
     target_domain = task.metadata.get("target_domain") or (clean_domain(requested_domain) if requested_domain else None)
     if requested_domain and clean_domain(requested_domain) != target_domain:
-        raise HTTPException(status_code=400, detail="Credential domain does not match the pending request")
+        return templates.TemplateResponse(
+            request=request, name="expired.html", context={}, status_code=400,
+        )
     if task.state != TaskState.NEEDS_INPUT:
-        raise HTTPException(status_code=409, detail="This task is no longer waiting for input")
+        return templates.TemplateResponse(
+            request=request, name="expired.html", context={}, status_code=409,
+        )
     if task.metadata.get("target_domain"):
         pending = task_registry.get_credential_input(task_id)
         if not pending or not pending.is_pending:
-            raise HTTPException(status_code=409, detail="This credential request has expired")
+            return templates.TemplateResponse(
+                request=request, name="expired.html", context={}, status_code=409,
+            )
 
     response = templates.TemplateResponse(
         request=request,
         name="needs_input.html",
-        context={"task": task, "telegram_id": user.telegram_id, "target_domain": target_domain},
+        context={"task": task, "target_domain": target_domain},
     )
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"

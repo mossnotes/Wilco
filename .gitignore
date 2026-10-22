@@ -18,6 +18,9 @@ docs/
 
 # Testing & cache
 .pytest_cache/
+.cache/
+output/playwright/
+.playwright-cli/
 
 # Databases
 *.db

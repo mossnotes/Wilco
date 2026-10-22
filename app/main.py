@@ -1,9 +1,11 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.api import api_router
 from app.bot.setup import get_bot, get_dispatcher
@@ -92,6 +94,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.mount(
+    "/companion/static",
+    StaticFiles(directory=Path(__file__).parent / "companion" / "static"),
+    name="companion-static",
+)
 app.include_router(api_router)
 
 

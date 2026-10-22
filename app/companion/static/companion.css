@@ -1,0 +1,101 @@
+@font-face {
+    font-family: "Gowun Batang";
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url("fonts/gowun-batang-latin.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+        U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC,
+        U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+:root {
+    color-scheme: light;
+    font-family: "Gowun Batang", Georgia, serif;
+    color: #202020;
+    background: #fff;
+    font-synthesis: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; min-width: 280px; font-size: 16px; line-height: 1.6; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button, a, input, select, textarea { touch-action: manipulation; }
+button, a { -webkit-tap-highlight-color: transparent; }
+button { cursor: pointer; }
+a { color: inherit; text-decoration: none; }
+h1, h2, p { margin: 0; }
+h1, h2 { font-weight: 400; line-height: 1.3; }
+h1 { font-size: clamp(26px, 5vw, 32px); }
+h2 { margin-bottom: 28px; font-size: 24px; }
+svg { display: block; flex-shrink: 0; }
+
+.shell {
+    width: min(100%, 560px);
+    margin-inline: auto;
+    padding: max(30px, env(safe-area-inset-top)) 28px max(36px, env(safe-area-inset-bottom));
+}
+.app-header { margin-bottom: 64px; }
+.wordmark { display: inline-flex; align-items: center; min-height: 44px; font-size: 18px; }
+.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 32px; }
+.account-list { margin: 0; padding: 0; list-style: none; }
+.account-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 76px; border-bottom: 1px solid #ededed; }
+.account-row:first-child { border-top: 1px solid #ededed; }
+.domain, .request-domain, .dialog-domain { overflow-wrap: anywhere; }
+.domain { min-width: 0; }
+
+.button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 46px;
+    padding: 10px 22px;
+    border: 1px solid #202020;
+    border-radius: 4px;
+    background: #202020;
+    color: #fff;
+    font-size: 15px;
+    line-height: 1.5;
+    text-align: center;
+}
+.button:hover { background: #404040; border-color: #404040; }
+.button-small { padding-inline: 16px; font-size: 14px; white-space: nowrap; }
+.button-secondary { background: #fff; color: #202020; border-color: #dedede; }
+.button-secondary:hover { background: #f7f7f7; border-color: #b0b0b0; }
+.icon-button { display: grid; place-items: center; flex-shrink: 0; width: 44px; height: 44px; border: 0; border-radius: 4px; background: transparent; color: #606060; }
+.icon-button:hover { background: #f7f7f7; color: #202020; }
+:focus-visible { outline: 2px solid #202020; outline-offset: 4px; }
+:disabled { opacity: .45; cursor: default; }
+[aria-busy="true"] { cursor: progress; }
+
+.form-stack { display: grid; gap: 24px; }
+.field { display: grid; gap: 8px; }
+label { font-size: 14px; }
+input, select, textarea { width: 100%; min-width: 0; border: 1px solid #dedede; border-radius: 4px; background: #fff; padding: 11px 12px; line-height: 1.5; }
+input, select { min-height: 48px; }
+textarea { resize: vertical; min-height: 120px; }
+input:focus, select:focus, textarea:focus { border-color: #202020; }
+[aria-invalid="true"] { border-color: #202020; }
+.actions { display: flex; gap: 12px; margin-top: 8px; }
+.actions .button { flex: 1; }
+.feedback, .countdown { font-size: 14px; }
+.feedback { border-left: 2px solid #202020; padding-left: 12px; }
+.countdown { color: #606060; font-variant-numeric: tabular-nums; }
+.request-domain { margin-top: -12px; padding-bottom: 20px; border-bottom: 1px solid #ededed; }
+.dialog-domain { margin: -12px 0 28px; color: #606060; }
+
+dialog { width: min(420px, calc(100% - 32px)); max-height: calc(100dvh - 48px); margin: auto; padding: 30px; border: 1px solid #e5e5e5; border-radius: 6px; color: #202020; background: #fff; overscroll-behavior: contain; }
+dialog::backdrop { background: rgb(0 0 0 / 15%); }
+body:has(dialog[open]) { overflow: hidden; }
+.session-page { display: grid; justify-items: start; gap: 24px; padding-top: 48px; }
+.session-page p { color: #606060; font-size: 15px; }
+.session-page .button { margin-top: 8px; }
+
+@media (max-width: 380px) {
+    .shell { padding-inline: 20px; }
+    .app-header { margin-bottom: 48px; }
+    dialog { padding: 24px; }
+    .page-heading { gap: 12px; }
+}

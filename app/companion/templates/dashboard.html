@@ -1,210 +1,72 @@
 {% extends "layout.html" %}
 
-{% block title %}Connected Accounts — Wilco Vault{% endblock %}
-
 {% block content %}
-<div class="space-y-4">
-    <!-- Header & Action -->
-    <div class="flex items-center justify-between">
-        <div>
-            <h2 class="text-lg font-bold text-white">Connected Accounts</h2>
-            <p class="text-xs text-slate-400">Vaulted services for autonomous browser login</p>
-        </div>
-        <button onclick="openAddModal()" class="py-2 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white shadow-md shadow-blue-600/30 flex items-center space-x-1.5 transition">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
-            </svg>
-            <span>Add Account</span>
-        </button>
+<section>
+    <div class="page-heading">
+        <h1>{{ ui.accounts }}</h1>
+        <button class="button button-small" id="add-account" type="button">{{ ui.add_account }}</button>
     </div>
-
-    <!-- Accounts List -->
-    <div id="credentials-container" class="space-y-3">
-        {% if credentials and credentials|length > 0 %}
-            {% for cred in credentials %}
-            <div class="glass rounded-xl p-4 flex items-center justify-between border border-slate-800" id="cred-card-{{ cred.id }}">
-                <div class="space-y-1">
-                    <div class="flex items-center space-x-2">
-                        <span class="font-semibold text-sm text-white">{{ cred.site_domain }}</span>
-                        {% if cred.auth_type == 'password' %}
-                            <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-blue-950 text-blue-400 border border-blue-800">Password</span>
-                        {% elif cred.auth_type == 'totp_seed' %}
-                            <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-purple-950 text-purple-400 border border-purple-800">TOTP 2FA</span>
-                        {% else %}
-                            <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-950 text-amber-400 border border-amber-800">API Key</span>
-                        {% endif %}
-                    </div>
-                    {% if cred.username_or_identifier %}
-                        <p class="text-xs text-slate-300">{{ cred.username_or_identifier }}</p>
-                    {% endif %}
-                    <p class="text-xs font-mono text-slate-500">{{ cred.masked_secret }}</p>
-                </div>
-                <button onclick="revokeCredential('{{ cred.id }}', '{{ cred.site_domain }}')" class="p-2 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-950/40 transition">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
-                    </svg>
-                </button>
-            </div>
-            {% endfor %}
-        {% else %}
-            <div class="glass rounded-xl p-8 text-center text-slate-400 border border-slate-800 space-y-3">
-                <div class="w-12 h-12 rounded-xl bg-slate-800/80 mx-auto flex items-center justify-center text-slate-500">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
-                    </svg>
-                </div>
-                <p class="text-sm font-medium text-slate-300">No accounts connected yet</p>
-                <p class="text-xs text-slate-500 max-w-xs mx-auto">Add credentials here so Wilco can log in and automate tasks on services like Vercel, GitHub, or internal tools.</p>
-            </div>
-        {% endif %}
-    </div>
-</div>
-
-<!-- Add Credential Modal -->
-<div id="add-modal" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm hidden flex items-center justify-center p-4">
-    <div class="glass rounded-2xl p-5 w-full max-w-sm border border-slate-700 shadow-2xl space-y-4">
-        <div class="flex items-center justify-between">
-            <h3 class="text-base font-bold text-white">Add Encrypted Credential</h3>
-            <button onclick="closeAddModal()" class="text-slate-400 hover:text-white">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                </svg>
+    <ul class="account-list" id="credentials-container">
+        {% for cred in credentials %}
+        <li class="account-row" id="cred-card-{{ cred.id }}">
+            <span class="domain">{{ cred.site_domain }}</span>
+            <button class="icon-button" type="button" data-remove-id="{{ cred.id }}" data-domain="{{ cred.site_domain }}" aria-label="{{ ui.remove }}">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13M10 10v7m4-7v7"/></svg>
             </button>
+        </li>
+        {% endfor %}
+    </ul>
+</section>
+
+<template id="account-row-template">
+    <li class="account-row">
+        <span class="domain"></span>
+        <button class="icon-button" type="button" aria-label="{{ ui.remove }}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13M10 10v7m4-7v7"/></svg>
+        </button>
+    </li>
+</template>
+
+<dialog id="add-modal" aria-labelledby="add-title">
+    <h2 id="add-title">{{ ui.add_account }}</h2>
+    <form id="add-cred-form" class="form-stack" novalidate>
+        <div class="field">
+            <label for="site_domain">{{ ui.website }}</label>
+            <input id="site_domain" name="site_domain" type="text" inputmode="url" autocapitalize="none" spellcheck="false" autocomplete="off" required>
         </div>
+        <div class="field">
+            <label for="auth_type">{{ ui.type }}</label>
+            <select id="auth_type" name="auth_type">
+                <option value="password">{{ ui.password }}</option>
+                <option value="totp_seed">{{ ui.authenticator_key }}</option>
+                <option value="api_key">{{ ui.api_key }}</option>
+            </select>
+        </div>
+        <div class="field" id="identifier-group">
+            <label for="username_or_identifier">{{ ui.username_or_email }}</label>
+            <input id="username_or_identifier" name="username_or_identifier" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="320">
+        </div>
+        <div class="field">
+            <label for="secret" id="secret-label">{{ ui.password }}</label>
+            <input id="secret" name="secret" type="password" autocomplete="new-password" spellcheck="false" required>
+        </div>
+        <p id="modal-error" class="feedback" role="alert" hidden></p>
+        <div class="actions">
+            <button class="button button-secondary" type="button" data-close-dialog>{{ ui.cancel }}</button>
+            <button class="button" type="submit" id="save-btn">{{ ui.save }}</button>
+        </div>
+    </form>
+</dialog>
 
-        <form id="add-cred-form" onsubmit="submitCredential(event)" class="space-y-3">
-            <div>
-                <label class="block text-xs font-semibold text-slate-300 mb-1">Target Website / Domain</label>
-                <input type="text" id="site_domain" required placeholder="e.g. vercel.com or github.com" class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm text-white focus:outline-none focus:border-blue-500">
-            </div>
-
-            <div>
-                <label class="block text-xs font-semibold text-slate-300 mb-1">Authentication Type</label>
-                <select id="auth_type" onchange="handleAuthTypeChange()" class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm text-white focus:outline-none focus:border-blue-500">
-                    <option value="password">Password</option>
-                    <option value="totp_seed">TOTP Seed (2FA)</option>
-                    <option value="api_key">API Key</option>
-                </select>
-            </div>
-
-            <div id="identifier-group">
-                <label class="block text-xs font-semibold text-slate-300 mb-1">Username / Email / Account</label>
-                <input type="text" id="username_or_identifier" placeholder="e.g. user@example.com" class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm text-white focus:outline-none focus:border-blue-500">
-            </div>
-
-            <div>
-                <label id="secret-label" class="block text-xs font-semibold text-slate-300 mb-1">Secret / Password</label>
-                <input type="password" id="secret" required placeholder="Enter password" class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm text-white focus:outline-none focus:border-blue-500">
-                <p id="secret-help" class="text-[11px] text-slate-500 mt-1">Encrypted on submit with AES-256-GCM.</p>
-            </div>
-
-            <div id="modal-error" class="text-xs text-red-400 hidden"></div>
-
-            <div class="flex items-center space-x-2 pt-2">
-                <button type="button" onclick="closeAddModal()" class="w-1/2 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300">Cancel</button>
-                <button type="submit" id="save-btn" class="w-1/2 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white shadow-md shadow-blue-600/30">Save to Vault</button>
-            </div>
-        </form>
-    </div>
-</div>
+<dialog id="remove-modal" aria-labelledby="remove-title">
+    <h2 id="remove-title">{{ ui.remove_account }}</h2>
+    <p class="dialog-domain" id="remove-domain"></p>
+    <form id="remove-form" class="form-stack">
+        <p id="remove-error" class="feedback" role="alert" hidden></p>
+        <div class="actions">
+            <button class="button button-secondary" type="button" data-close-dialog>{{ ui.cancel }}</button>
+            <button class="button" type="submit">{{ ui.remove }}</button>
+        </div>
+    </form>
+</dialog>
 {% endblock %}
-
-{% block scripts %}
-<script>
-    function openAddModal() {
-        document.getElementById('add-modal').classList.remove('hidden');
-        document.getElementById('modal-error').classList.add('hidden');
-    }
-
-    function closeAddModal() {
-        document.getElementById('add-modal').classList.add('hidden');
-        document.getElementById('add-cred-form').reset();
-    }
-
-    function handleAuthTypeChange() {
-        const type = document.getElementById('auth_type').value;
-        const secretLabel = document.getElementById('secret-label');
-        const secretInput = document.getElementById('secret');
-        const secretHelp = document.getElementById('secret-help');
-        const idGroup = document.getElementById('identifier-group');
-
-        if (type === 'totp_seed') {
-            secretLabel.innerText = 'TOTP Secret Seed (Base32)';
-            secretInput.placeholder = 'e.g. JBSWY3DPEHPK3PXP';
-            secretHelp.innerText = 'Base32 secret key provided during 2FA authenticator setup.';
-            idGroup.classList.add('hidden');
-        } else if (type === 'api_key') {
-            secretLabel.innerText = 'API Key / Secret Token';
-            secretInput.placeholder = 'e.g. sk-ant-api03-...';
-            secretHelp.innerText = 'Masked prefix & suffix will be preserved for UI identification.';
-            idGroup.classList.add('hidden');
-        } else {
-            secretLabel.innerText = 'Password';
-            secretInput.placeholder = 'Enter password';
-            secretHelp.innerText = 'Encrypted on submit with AES-256-GCM.';
-            idGroup.classList.remove('hidden');
-        }
-    }
-
-    async function submitCredential(e) {
-        e.preventDefault();
-        const errDiv = document.getElementById('modal-error');
-        const saveBtn = document.getElementById('save-btn');
-        errDiv.classList.add('hidden');
-        saveBtn.disabled = true;
-        saveBtn.innerText = 'Encrypting...';
-
-        const payload = {
-            site_domain: document.getElementById('site_domain').value.trim(),
-            auth_type: document.getElementById('auth_type').value,
-            username_or_identifier: document.getElementById('username_or_identifier').value.trim() || null,
-            secret: document.getElementById('secret').value.trim(),
-        };
-
-        try {
-            const resp = await fetch('/api/vault/credentials', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-
-            if (!resp.ok) {
-                const data = await resp.json();
-                throw new Error(data.detail || 'Failed to save credential');
-            }
-
-            closeAddModal();
-            window.location.reload();
-        } catch (err) {
-            errDiv.innerText = err.message;
-            errDiv.classList.remove('hidden');
-        } finally {
-            saveBtn.disabled = false;
-            saveBtn.innerText = 'Save to Vault';
-        }
-    }
-
-    async function revokeCredential(credId, domain) {
-        if (!confirm(`Are you sure you want to permanently revoke credentials for ${domain}?`)) {
-            return;
-        }
-
-        try {
-            const resp = await fetch(`/api/vault/credentials/${credId}`, {
-                method: 'DELETE'
-            });
-
-            if (resp.ok) {
-                const card = document.getElementById(`cred-card-${credId}`);
-                if (card) card.remove();
-                window.location.reload();
-            } else {
-                alert('Failed to revoke credential');
-            }
-        } catch (err) {
-            alert('Error communicating with vault: ' + err.message);
-        }
-    }
-</script>
-{% endblock %}
-

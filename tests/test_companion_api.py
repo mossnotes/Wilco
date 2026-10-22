@@ -2,6 +2,8 @@ import pytest
 import pytest_asyncio
 import time
 import uuid
+from html.parser import HTMLParser
+from unittest.mock import patch
 from httpx import AsyncClient
 
 from app.companion.auth import SESSION_COOKIE_NAME, create_session_token
@@ -14,6 +16,33 @@ from app.db.repository import (
 from app.tasks.state import TaskRecord, TaskState
 from app.tasks.registry import task_registry
 from app.db.repository import CredentialRepository
+from app.companion.routes import templates
+
+
+class PageText(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.hidden_depth = 0
+        self.text = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style"):
+            self.hidden_depth -= 1
+
+    def handle_data(self, data):
+        if not self.hidden_depth and data.strip():
+            self.text.append(data.strip())
+
+
+def assert_approved_page_text(html, domains=()):
+    parser = PageText()
+    parser.feed(html)
+    approved = set(templates.env.globals["ui"].values()) | set(domains)
+    assert set(parser.text) <= approved
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -27,7 +56,8 @@ async def test_unauthorized_access(async_client: AsyncClient):
     # Dashboard without session cookie returns 401 HTML
     resp = await async_client.get("/companion/accounts")
     assert resp.status_code == 401
-    assert "Session Link Required" in resp.text
+    assert "<h1>Sign in</h1>" in resp.text
+    assert_approved_page_text(resp.text)
 
     # REST vault API without auth returns 401 JSON
     resp_api = await async_client.get("/api/vault/credentials")
@@ -49,14 +79,15 @@ async def test_identity_linking_flow(async_client: AsyncClient):
     # 2. Access /companion/link?token=XYZ
     resp = await async_client.get(f"/companion/link?token={token_str}")
     assert resp.status_code == 200
-    assert "Identity Linked!" in resp.text
-    assert f"#{telegram_id}" in resp.text
+    assert "<h1>Connected</h1>" in resp.text
+    assert str(telegram_id) not in resp.text
+    assert_approved_page_text(resp.text)
     assert SESSION_COOKIE_NAME in resp.cookies
 
     # 3. Attempting to consume same token again must fail (one-time token)
     resp_second = await async_client.get(f"/companion/link?token={token_str}")
     assert resp_second.status_code == 401
-    assert "Session Link Required" in resp_second.text
+    assert "<h1>Sign in</h1>" in resp_second.text
 
 
 @pytest.mark.asyncio
@@ -72,7 +103,9 @@ async def test_companion_dashboard_authenticated(async_client: AsyncClient):
 
     resp = await async_client.get("/companion/accounts")
     assert resp.status_code == 200
-    assert "Connected Accounts" in resp.text
+    assert "<h1>Accounts</h1>" in resp.text
+    assert str(telegram_id) not in resp.text
+    assert_approved_page_text(resp.text)
 
 
 @pytest.mark.asyncio
@@ -135,6 +168,16 @@ async def test_vault_credentials_crud(async_client: AsyncClient):
     raw_secrets = [i.get("secret") for i in items if "secret" in i]
     assert len(raw_secrets) == 0  # No plaintext 'secret' key exists in output
 
+    # The page shows only domains and never decrypts credentials to render them.
+    with patch("app.companion.routes.decrypt_secret") as decrypt:
+        page = await async_client.get("/companion/accounts")
+        decrypt.assert_not_called()
+    assert page.status_code == 200
+    assert "vercel.com" in page.text
+    assert_approved_page_text(page.text, domains=("vercel.com",))
+    for private_value in (str(telegram_id), "test@vercel.com", "MySecretPassword123!", "••••••••"):
+        assert private_value not in page.text
+
     # 5. Revoke credential
     del_resp = await async_client.delete(f"/api/vault/credentials/{cred_id}")
     assert del_resp.status_code == 200
@@ -170,7 +213,11 @@ async def test_task_needs_input_resolution(async_client: AsyncClient):
     # 1. View input page
     page_resp = await async_client.get(f"/companion/input?task_id={task.task_id}")
     assert page_resp.status_code == 200
-    assert "Waiting for 2FA confirmation code" in page_resp.text
+    assert "<h1>Input needed</h1>" in page_resp.text
+    assert task.prompt not in page_resp.text
+    assert task.status_message not in page_resp.text
+    assert str(telegram_id) not in page_resp.text
+    assert_approved_page_text(page_resp.text)
 
     # 2. Submit resolution input
     resolve_resp = await async_client.post(
@@ -272,4 +319,31 @@ async def test_domain_query_cannot_change_requested_site(async_client, credentia
     _, task, _ = credential_request
     response = await async_client.get(f"/companion/input?task_id={task.task_id}&domain=attacker.com")
     assert response.status_code == 400
+    assert_approved_page_text(response.text)
+
+
+async def test_companion_assets_are_local_and_public(async_client):
+    for path, content_type in (
+        ("companion.css", "text/css"),
+        ("companion.js", "text/javascript"),
+        ("fonts/gowun-batang-latin.woff2", "font/woff2"),
+    ):
+        response = await async_client.get(f"/companion/static/{path}")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+    font = await async_client.get("/companion/static/fonts/gowun-batang-latin.woff2")
+    assert font.content.startswith(b"wOF2")
+
+
+async def test_missing_link_token_uses_approved_page(async_client):
+    response = await async_client.get("/companion/link")
+    assert response.status_code == 401
+    assert_approved_page_text(response.text)
+
+
+async def test_missing_input_task_uses_approved_page(async_client, credential_request):
+    response = await async_client.get("/companion/input")
+    assert response.status_code == 404
+    assert "<h1>Expired</h1>" in response.text
+    assert_approved_page_text(response.text)
 

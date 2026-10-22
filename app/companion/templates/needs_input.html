@@ -1,165 +1,49 @@
 {% extends "layout.html" %}
 
-{% block title %}Action Required — Wilco Task{% endblock %}
-
 {% block content %}
-<div class="space-y-4">
-    <div class="text-center py-2">
-        <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-950 text-amber-400 border border-amber-800">
-            <span class="w-2 h-2 mr-1.5 rounded-full bg-amber-400 animate-ping"></span>
-            NEEDS INPUT
-        </span>
-        <h2 class="text-lg font-bold text-white mt-2">Agent Needs Your Input</h2>
-        <p class="text-xs text-slate-400">Wilco paused execution awaiting your guidance or credentials</p>
-    </div>
-
-    <!-- Task Context Card -->
-    <div class="glass rounded-xl p-4 border border-slate-800 space-y-2">
-        <div class="flex items-center justify-between text-xs text-slate-400">
-            <span>Task ID:</span>
-            <span class="font-mono text-slate-300">{{ task.task_id }}</span>
+<section>
+    <div class="page-heading"><h1>{{ ui.input_needed }}</h1></div>
+    <form id="resolve-form" class="form-stack" novalidate
+          data-task-id="{{ task.task_id }}"
+          data-target-domain="{{ target_domain | default('', true) }}"
+          data-deadline="{{ task.metadata.get('credential_input_deadline') or '' }}">
+        {% if target_domain %}
+        <p class="request-domain">{{ target_domain }}</p>
+        <div class="field">
+            <label for="username">{{ ui.username_or_email }}</label>
+            <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="320">
         </div>
-        <div class="text-xs">
-            <span class="text-slate-400">Task Prompt:</span>
-            <p class="text-sm font-medium text-white mt-0.5">{{ task.prompt }}</p>
+        <div class="field">
+            <label for="password">{{ ui.password }}</label>
+            <input id="password" type="password" name="password" autocomplete="current-password" required>
         </div>
-        <div class="text-xs pt-1 border-t border-slate-800">
-            <span class="text-slate-400">Current Status:</span>
-            <p class="text-xs text-amber-300 font-mono mt-0.5">{{ task.status_message }}</p>
+        <div class="field">
+            <label for="totp_seed">{{ ui.authenticator_key_optional }}</label>
+            <input id="totp_seed" name="totp_seed" type="password" autocomplete="off" spellcheck="false" maxlength="1024">
         </div>
-    </div>
+        <p id="input-countdown" class="countdown" role="timer" hidden></p>
+        {% else %}
+        <div class="field">
+            <label for="user_input">{{ ui.response }}</label>
+            <textarea id="user_input" name="user_input" rows="3"></textarea>
+        </div>
+        {% endif %}
+        <p id="resolve-error" class="feedback" role="alert" hidden></p>
+        <div class="actions">
+            <button class="button button-secondary" id="cancel-task" type="button">{{ ui.cancel_task }}</button>
+            <button class="button" type="submit" id="submit-btn">{{ ui.resume }}</button>
+        </div>
+    </form>
+</section>
 
-    <!-- Response Form -->
-    <div class="glass rounded-xl p-4 border border-slate-800">
-        <form id="resolve-form" onsubmit="submitResolution(event)" class="space-y-4"
-              data-task-id="{{ task.task_id }}"
-              data-target-domain="{{ target_domain | default('', true) }}"
-              data-deadline="{{ task.metadata.get('credential_input_deadline') or '' }}">
-            {% if target_domain %}
-            <div class="rounded-lg bg-slate-900 border border-slate-700 p-3">
-                <span class="text-xs text-slate-400">Credentials for</span>
-                <p class="font-mono text-sm text-blue-300 break-all">{{ target_domain }}</p>
-            </div>
-            <div>
-                <label for="username" class="block text-xs font-semibold text-slate-300 mb-1">Username / Email</label>
-                <input id="username" type="text" autocomplete="username" maxlength="320" class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm text-white">
-            </div>
-            <div>
-                <label for="password" class="block text-xs font-semibold text-slate-300 mb-1">Password</label>
-                <input id="password" type="password" autocomplete="current-password" required class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm text-white">
-            </div>
-            <div>
-                <label for="totp_seed" class="block text-xs font-semibold text-slate-300 mb-1">TOTP Secret Key (optional)</label>
-                <input id="totp_seed" type="password" autocomplete="off" spellcheck="false" maxlength="1024" class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm text-white">
-                <p class="mt-1 text-xs text-slate-400">The setup key from your authenticator settings, if available. Leave blank to keep your existing key.</p>
-            </div>
-            <p id="input-countdown" role="status" class="text-xs text-amber-300"></p>
-            {% else %}
-            <div>
-                <label class="block text-xs font-semibold text-slate-300 mb-1">Your Response / Value</label>
-                <textarea id="user_input" rows="3" placeholder="Enter the requested response or confirmation..." class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm text-white focus:outline-none focus:border-blue-500"></textarea>
-            </div>
-            {% endif %}
-
-            <div id="resolve-error" class="text-xs text-red-400 hidden"></div>
-
-            <div class="flex items-center space-x-2 pt-1">
-                <button type="button" onclick="cancelTask()" class="w-1/2 py-2.5 rounded-lg bg-red-950/60 hover:bg-red-900/80 border border-red-800 text-xs font-semibold text-red-300 transition">Cancel Task</button>
-                <button type="submit" id="submit-btn" class="w-1/2 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white shadow-md shadow-blue-600/30 transition">Submit & Resume</button>
-            </div>
-        </form>
-    </div>
-</div>
+<dialog id="cancel-modal" aria-labelledby="cancel-title">
+    <h2 id="cancel-title">{{ ui.cancel_task_question }}</h2>
+    <form id="cancel-form" class="form-stack">
+        <p id="cancel-error" class="feedback" role="alert" hidden></p>
+        <div class="actions">
+            <button class="button button-secondary" type="button" data-close-dialog>{{ ui.close }}</button>
+            <button class="button" type="submit">{{ ui.cancel_task }}</button>
+        </div>
+    </form>
+</dialog>
 {% endblock %}
-
-{% block scripts %}
-<script>
-    const form = document.getElementById('resolve-form');
-    const taskId = form.dataset.taskId;
-    const targetDomain = form.dataset.targetDomain;
-    const deadline = Number(form.dataset.deadline) || null;
-    const countdown = document.getElementById('input-countdown');
-    if (countdown && deadline) {
-        function updateCountdown() {
-            const remaining = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
-            countdown.textContent = remaining ? `Time remaining: ${remaining}s` : 'This request has expired. Start a new task to try again.';
-            if (!remaining) document.getElementById('submit-btn').disabled = true;
-        }
-        updateCountdown();
-        setInterval(updateCountdown, 1000);
-    }
-
-    async function submitResolution(e) {
-        e.preventDefault();
-        const payload = { approved: true };
-        if (targetDomain) {
-            payload.credentials = { [targetDomain]: document.getElementById('password').value };
-            payload.username = document.getElementById('username').value.trim() || null;
-            payload.totp_seed = document.getElementById('totp_seed').value.trim() || null;
-        } else {
-            payload.user_input = document.getElementById('user_input').value.trim();
-        }
-        const errDiv = document.getElementById('resolve-error');
-        const submitBtn = document.getElementById('submit-btn');
-
-        errDiv.classList.add('hidden');
-        submitBtn.disabled = true;
-        submitBtn.innerText = 'Submitting...';
-
-        try {
-            const resp = await fetch(`/api/tasks/${taskId}/resolve-input`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-
-            if (!resp.ok) {
-                const data = await resp.json();
-                throw new Error(data.detail || 'Failed to submit response');
-            }
-
-            document.getElementById('resolve-form').reset();
-
-            alert('Input accepted! The agent will resume execution.');
-            if (window.Telegram && window.Telegram.WebApp) {
-                window.Telegram.WebApp.close();
-            } else {
-                window.location.href = '/companion/accounts';
-            }
-        } catch (err) {
-            errDiv.innerText = err.message;
-            errDiv.classList.remove('hidden');
-        } finally {
-            submitBtn.disabled = !!(deadline && deadline <= Date.now() / 1000);
-            submitBtn.innerText = 'Submit & Resume';
-        }
-    }
-
-    async function cancelTask() {
-        if (!confirm('Are you sure you want to cancel this task?')) return;
-
-        try {
-            const resp = await fetch(`/api/tasks/${taskId}/resolve-input`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    approved: false,
-                    user_input: 'Cancelled by user via companion app'
-                })
-            });
-
-            if (resp.ok) {
-                alert('Task cancelled.');
-                if (window.Telegram && window.Telegram.WebApp) {
-                    window.Telegram.WebApp.close();
-                } else {
-                    window.location.href = '/companion/accounts';
-                }
-            }
-        } catch (err) {
-            alert('Error cancelling task: ' + err.message);
-        }
-    }
-</script>
-{% endblock %}
-
