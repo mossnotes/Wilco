@@ -34,7 +34,13 @@ def sanitize_memory_text(text: str, *, secrets: tuple[str, ...] = (), strip_url_
     )
     for value in sorted(set(secrets + configured), key=len, reverse=True):
         if value:
-            text = re.sub(re.escape(value), lambda _: REDACTED_LABEL, text)
+            text = re.sub(re.escape(value), lambda _: REDACTED_LABEL, text, flags=re.IGNORECASE)
+            if re.fullmatch(r"\+?[0-9]{6,15}", value):
+                # A website may display a saved number with spaces, parentheses
+                # or hyphens even though its vaulted form contains only digits.
+                digits = value.lstrip("+")
+                pattern = r"(?<!\d)\+?" + r"[\s().-]*".join(digits) + r"(?!\d)"
+                text = re.sub(pattern, lambda _: REDACTED_LABEL, text)
     text = re.sub(r"<secret>.*?</secret>", REDACTED_LABEL, text, flags=re.DOTALL | re.IGNORECASE)
     text = sanitize_log(text)
     text = re.sub(

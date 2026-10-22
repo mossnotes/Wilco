@@ -156,7 +156,7 @@ def message(task, text="person@example.com", *, sender=None, reply_id=456):
 
 @pytest.mark.parametrize("field,value", [("username", "myusername"), ("email", "person@example.com")])
 async def test_chat_reply_resumes_original_browser_task(field, value, monkeypatch):
-    _, task, controller, browser, ready = await make_context()
+    user, task, controller, browser, ready = await make_context()
     route = AsyncMock()
     monkeypatch.setattr("app.bot.handlers.route_message", route)
     running = asyncio.create_task(action(controller, "ask_user")(domain="example.com", field=field, browser_session=browser))
@@ -173,13 +173,21 @@ async def test_chat_reply_resumes_original_browser_task(field, value, monkeypatc
         msg = message(task, value)
         await handle_text_message(msg)
         result = await asyncio.wait_for(running, 5)
-        assert value in result.extracted_content
+        assert value not in result.extracted_content
+        assert f"<secret>example_{field}</secret>" in result.extracted_content
+        assert controller.sensitive_data["https://*.example.com"][f"example_{field}"] == value
         assert result.error is None
         assert task.state == TaskState.RUNNING
         assert task_registry.get_chat_input(task.chat_id) is None
         assert "chat_input_field" not in task.metadata
         route.assert_not_awaited()
         async with async_session_factory() as db:
+            credentials = await CredentialRepository.get_credentials_for_domain(db, user.id, "example.com")
+            assert len(credentials) == 1
+            assert credentials[0].auth_type == field
+            assert credentials[0].username_or_identifier is None
+            assert value not in credentials[0].encrypted_blob
+            assert decrypt_secret(credentials[0].encrypted_blob, settings.vault_key_bytes) == value
             saved = await TaskRepository.get_task(db, task.task_id)
             assert saved.state == TaskState.RUNNING
             assert value not in saved.model_dump_json()
@@ -220,11 +228,11 @@ async def test_invalid_chat_reply_does_not_wake_browser(variant, monkeypatch):
         task_registry.clear_chat_input(task.chat_id)
 
 
-@pytest.mark.parametrize("name", ["ask_user", "need_otp"])
+@pytest.mark.parametrize("name", ["ask_user", "ask_phone_number", "ask_country_code", "need_otp"])
 async def test_chat_tool_timeout_cleans_up(monkeypatch, name):
     monkeypatch.setattr("app.browser.controller.CREDENTIAL_INPUT_TIMEOUT", 0.05)
     _, task, controller, browser, _ = await make_context()
-    kwargs = {"field": "email"} if name == "ask_user" else {"channel": "sms"}
+    kwargs = {"field": "email"} if name == "ask_user" else ({"channel": "sms"} if name == "need_otp" else {})
     result = await action(controller, name)(domain="example.com", browser_session=browser, **kwargs)
     assert "timed out" in result.error
     assert task.state == TaskState.FAILED
@@ -232,10 +240,10 @@ async def test_chat_tool_timeout_cleans_up(monkeypatch, name):
     assert "chat_input_field" not in task.metadata
 
 
-@pytest.mark.parametrize("name", ["ask_user", "need_otp"])
+@pytest.mark.parametrize("name", ["ask_user", "ask_phone_number", "ask_country_code", "need_otp"])
 async def test_chat_tool_cancellation_cleans_up(name):
     _, task, controller, browser, ready = await make_context()
-    kwargs = {"field": "username"} if name == "ask_user" else {"channel": "sms"}
+    kwargs = {"field": "username"} if name == "ask_user" else ({"channel": "sms"} if name == "need_otp" else {})
     running = asyncio.create_task(action(controller, name)(domain="example.com", browser_session=browser, **kwargs))
     await asyncio.wait_for(ready.wait(), 5)
     running.cancel()
@@ -245,7 +253,7 @@ async def test_chat_tool_cancellation_cleans_up(name):
     assert task_registry.get_chat_input(task.chat_id) is None
 
 
-@pytest.mark.parametrize("name", ["need_password", "need_api_key", "ask_user", "need_otp"])
+@pytest.mark.parametrize("name", ["need_password", "need_api_key", "ask_user", "ask_phone_number", "ask_country_code", "need_otp"])
 async def test_new_tools_reject_wrong_origin(name):
     _, _, controller, browser, _ = await make_context()
     browser.get_current_page_url.return_value = "https://attacker.com"
@@ -256,18 +264,22 @@ async def test_new_tools_reject_wrong_origin(name):
     assert controller.sensitive_data == {}
 
 
-async def test_chat_tool_rejects_secret_field():
+@pytest.mark.parametrize("field", ["otp", "phone", "country_code"])
+async def test_chat_tool_rejects_secret_or_separately_requested_field(field):
     _, _, controller, browser, _ = await make_context()
     with pytest.raises(ValidationError):
-        await action(controller, "ask_user")(domain="example.com", field="otp", browser_session=browser)
+        await action(controller, "ask_user")(domain="example.com", field=field, browser_session=browser)
     controller.status_manager.bot.send_message.assert_not_awaited()
 
 
 async def test_new_tools_registered_with_restricted_chat_schema():
     actions = SecureController().registry.registry.actions
-    assert {"need_password", "need_api_key", "ask_user", "need_otp"} <= actions.keys()
+    assert {"need_password", "need_api_key", "ask_user", "ask_phone_number", "ask_country_code", "need_otp"} <= actions.keys()
     schema = actions["ask_user"].param_model.model_json_schema()
     assert schema["properties"]["field"]["enum"] == ["username", "email"]
+    for name in ("ask_phone_number", "ask_country_code"):
+        properties = actions[name].param_model.model_json_schema()["properties"]
+        assert set(properties) == {"domain", "force_refresh"}
 
 
 @pytest.mark.parametrize("channel,hint", [

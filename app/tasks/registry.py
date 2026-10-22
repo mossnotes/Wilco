@@ -37,6 +37,7 @@ class ChatInputRequest:
     task: TaskRecord
     field: ChatInputField
     deadline: float
+    reply_chat_id: int
     prompt_message_id: Optional[int] = None
     response: Optional[str] = field(default=None, repr=False)
     event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -70,18 +71,30 @@ class ActiveTaskRegistry:
         self._credential_inputs: Dict[str, CredentialInputRequest] = {}
         self._chat_inputs: Dict[int, ChatInputRequest] = {}
 
-    def register_chat_input(self, task: TaskRecord, field_name: ChatInputField, deadline: float) -> ChatInputRequest:
-        if task.chat_id in self._chat_inputs:
+    def register_chat_input(
+        self, task: TaskRecord, field_name: ChatInputField, deadline: float,
+        *, reply_chat_id: Optional[int] = None,
+    ) -> ChatInputRequest:
+        reply_chat_id = reply_chat_id if reply_chat_id is not None else task.chat_id
+        chat_ids = {task.chat_id, reply_chat_id}
+        if any(chat_id in self._chat_inputs for chat_id in chat_ids):
             raise RuntimeError("A chat input request is already pending in this chat.")
-        pending = ChatInputRequest(task=task, field=field_name, deadline=deadline)
-        self._chat_inputs[task.chat_id] = pending
+        pending = ChatInputRequest(
+            task=task, field=field_name, deadline=deadline, reply_chat_id=reply_chat_id,
+        )
+        for chat_id in chat_ids:
+            self._chat_inputs[chat_id] = pending
         return pending
 
     def get_chat_input(self, chat_id: int) -> Optional[ChatInputRequest]:
         return self._chat_inputs.get(chat_id)
 
     def clear_chat_input(self, chat_id: int) -> None:
-        self._chat_inputs.pop(chat_id, None)
+        pending = self._chat_inputs.get(chat_id)
+        if pending:
+            for key in {pending.task.chat_id, pending.reply_chat_id}:
+                if self._chat_inputs.get(key) is pending:
+                    self._chat_inputs.pop(key, None)
 
     def register_credential_input(self, task: TaskRecord, domain: str, deadline: float) -> CredentialInputRequest:
         if task.task_id in self._credential_inputs:
@@ -138,10 +151,14 @@ class ActiveTaskRegistry:
 
     async def cancel_task_by_chat(self, chat_id: int, *, user_id: int) -> bool:
         """
-        Cancels only the requesting owner's active task in this chat.
+        Cancels the owner's task in this chat or awaiting their private reply.
         Transitions the task record to FAILED and forces status message update.
         """
         entry = self.get_by_chat(chat_id)
+        if entry is None and chat_id == user_id:
+            pending = self.get_chat_input(chat_id)
+            if pending and pending.reply_chat_id == chat_id and pending.task.user_id == user_id and pending.is_pending:
+                entry = self.get_by_id(pending.task.task_id)
         if not entry or not user_id or entry[0].user_id != user_id or entry[0].is_terminal:
             return False
 

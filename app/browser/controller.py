@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import re
 import time
 from typing import Any, Literal, Optional, Union
 from urllib.parse import urlencode
@@ -9,13 +10,16 @@ import uuid
 from browser_use import ActionResult, Controller
 from browser_use.browser.session import BrowserSession
 from aiogram.types import ForceReply
+from aiogram.exceptions import TelegramForbiddenError
 
 from app.browser.credentials_resolver import SensitiveData, credential_scope, get_domain_slug, unpack_credentials
 from app.config import settings
 from app.db.engine import async_session_factory
 from app.db.repository import CredentialRepository, IdentityTokenRepository, TaskRepository, UserRepository
 from app.security.origins import clean_domain, validate_origin
-from app.tasks.chat_input import ChatInputField, OTPChannel, otp_prompt
+from app.security.account_details import account_placeholders, normalize_account_detail
+from app.security.vault import decrypt_secret, encrypt_secret
+from app.tasks.chat_input import ChatInputField, OTPChannel, account_input_prompt, otp_prompt
 from app.tasks.registry import task_registry
 from app.tasks.state import TaskRecord, TaskState
 
@@ -52,14 +56,27 @@ class SecureController(Controller):
         # Upstream substitutes tags for every action. Only native input should receive
         # secrets; URL navigation, JS evaluation, and extraction must keep literal tags.
         actions = action.model_dump(exclude_unset=True)
+        if input_action := actions.get("input"):
+            text = input_action.get("text", "")
+            separate_value = re.search(r"<secret>[^<>]+_(?:phone_number|country_code)</secret>", text)
+            if separate_value and text != separate_value.group():
+                return ActionResult(error=(
+                    "Phone-number and country-code inputs must each use their own placeholder alone. "
+                    "Do not prepend, append, or concatenate a country code and phone number."
+                ))
         if not actions.get("input"):
             kwargs.pop("sensitive_data", None)
-        if any(actions.get(name) is not None for name in ("request_domain_credentials", "need_password", "need_api_key", "ask_user", "need_otp")) and kwargs.get("action_timeout") is None:
+        if any(actions.get(name) is not None for name in ("request_domain_credentials", "need_password", "need_api_key", "ask_user", "ask_phone_number", "ask_country_code", "need_otp")) and kwargs.get("action_timeout") is None:
             kwargs["action_timeout"] = CREDENTIAL_INPUT_TIMEOUT + 30
         return await super().act(action=action, browser_session=browser_session, **kwargs)
 
     async def _resolve_user_id(self) -> Optional[uuid.UUID]:
         if self.user_id:
+            if self.task:
+                async with async_session_factory() as db:
+                    user = await UserRepository.get_by_id(db, self.user_id)
+                if not user or user.telegram_id != self.task.user_id:
+                    return None
             return self.user_id
         if self.telegram_id:
             async with async_session_factory() as db:
@@ -164,13 +181,81 @@ class SecureController(Controller):
                     logger.error("Could not persist credential request cleanup for task %s", task.task_id)
             await self._update_status()
 
+    async def _saved_account_detail(
+        self, user_id: uuid.UUID, domain: str, field: str,
+    ) -> tuple[Optional[str], bool]:
+        async with async_session_factory() as db:
+            credentials = await CredentialRepository.get_credentials_for_domain(db, user_id, domain)
+        stored = next((item for item in credentials if item.auth_type == field), None)
+        value = decrypt_secret(stored.encrypted_blob, settings.vault_key_bytes) if stored else None
+        legacy = False
+        if value is None and field in ("username", "email"):
+            # Migrate the old password-associated identifier when it matches the
+            # requested field. Never invent an email from a saved username.
+            value = next((item.username_or_identifier for item in credentials if item.username_or_identifier and (
+                ("@" in item.username_or_identifier) == (field == "email")
+            )), None)
+            legacy = value is not None
+        if value is not None:
+            try:
+                normalized = normalize_account_detail(value, field)
+                return normalized, legacy or normalized != value
+            except ValueError:
+                pass  # Old combined international numbers require a fresh phone-only reply.
+        return None, False
+
+    async def _save_account_detail(self, user_id: uuid.UUID, domain: str, field: str, value: str) -> None:
+        encrypted = encrypt_secret(value, settings.vault_key_bytes)
+        async with async_session_factory() as db:
+            await CredentialRepository.add_or_update_credential(db, user_id, domain, field, encrypted)
+            if field in ("username", "email"):
+                credentials = await CredentialRepository.get_credentials_for_domain(db, user_id, domain)
+                for item in credentials:
+                    if item.username_or_identifier and item.username_or_identifier.strip() == value:
+                        item.username_or_identifier = None
+            await db.commit()
+
+    def _publish_account_detail(self, domain: str, field: str, value: str) -> ActionResult:
+        slug = get_domain_slug(domain)
+        slots = account_placeholders(slug, field, value)
+        scoped = self.sensitive_data.setdefault(credential_scope(domain), {})
+        previous_login = scoped.get(f"{slug}_user")
+        if field == "phone":
+            # A refreshed local number must not retain the previous number's
+            # international formats in the shared placeholder dictionary.
+            for name in tuple(scoped):
+                if name.startswith(f"{slug}_phone_"):
+                    scoped.pop(name)
+        scoped.update(slots)
+        if field in ("username", "email") and previous_login is not None:
+            # Keep preloaded compatibility aliases in sync after a refresh.
+            login = scoped.get(f"{slug}_username") or scoped[f"{slug}_email"]
+            scoped[f"{slug}_user"] = login
+            if scoped.get("x_user") == previous_login:
+                scoped["x_user"] = login
+        placeholders = ", ".join(f"<secret>{name}</secret>" for name in slots)
+        details = ""
+        if field == "phone":
+            details = " Use phone_number alone in the phone field. Keep the country calling code separate."
+        elif field == "country_code":
+            # Calling codes are public selector metadata, not the user's phone
+            # number. The number remains available only as a secret placeholder.
+            details = (
+                f" Calling code: {value}; digits without '+': {value[1:]}. "
+                "Use only in the country-code field or selector."
+            )
+        return ActionResult(extracted_content=(
+            f"{field.capitalize()} ready for {domain}.{details} Use the standard input action with: {placeholders}."
+        ))
+
     async def _ask_user(
         self, domain: str, field: ChatInputField, browser_session: Optional[BrowserSession],
         channel: OTPChannel = "unknown",
+        force_refresh: bool = False,
     ) -> ActionResult:
         task = self.task
-        if field not in ("username", "email", "otp"):
-            return ActionResult(error="Only username, email, or one-time codes can be requested in chat.")
+        if field not in ("username", "email", "phone", "country_code", "otp"):
+            return ActionResult(error="Only account identifiers, country calling codes, or one-time codes can be requested in chat.")
         if not task or not self.status_manager or self.telegram_id != task.user_id or task.state != TaskState.RUNNING:
             return ActionResult(error="No running task with an authenticated chat is available.")
         target = clean_domain(domain)
@@ -183,8 +268,36 @@ class SecureController(Controller):
         if not validate_origin(current_url, target)[0]:
             return ActionResult(error="Security violation: Active page does not match the requested domain.")
 
+        user_id = None
+        if field != "otp":
+            try:
+                user_id = await self._resolve_user_id()
+                if user_id is None:
+                    return ActionResult(error="An authenticated vault owner is required.")
+                value, needs_save = (None, False) if force_refresh else await self._saved_account_detail(
+                    user_id, target, field,
+                )
+                if value is not None:
+                    current_url = await browser_session.get_current_page_url()
+                    if not validate_origin(current_url, target)[0] or task.state != TaskState.RUNNING:
+                        return ActionResult(error="Security violation: Page or task changed during account lookup.")
+                    if needs_save:
+                        await self._save_account_detail(user_id, target, field, value)
+                        current_url = await browser_session.get_current_page_url()
+                        if not validate_origin(current_url, target)[0] or task.state != TaskState.RUNNING:
+                            return ActionResult(error="Security violation: Page or task changed while saving account details.")
+                    return self._publish_account_detail(target, field, value)
+            except Exception:
+                logger.error("Could not load saved account detail for task %s field=%s", task.task_id, field)
+                return ActionResult(error="Could not read saved account details securely.")
+
         deadline = time.time() + CREDENTIAL_INPUT_TIMEOUT
-        pending = task_registry.register_chat_input(task, field, deadline)
+        try:
+            pending = task_registry.register_chat_input(
+                task, field, deadline, reply_chat_id=task.user_id,
+            )
+        except RuntimeError:
+            return ActionResult(error="Another input request is waiting for this user's private reply. Complete it first.")
         task.metadata["chat_input_field"] = field
         task.transition_to(TaskState.NEEDS_INPUT, status_message=f"Waiting for your {field} in Telegram.")
         logger.info("Task %s requesting chat input field=%s domain=%s", task.task_id, field, target)
@@ -193,10 +306,8 @@ class SecureController(Controller):
                 await self._save_task()
                 await self._update_status()
                 prompt = await self.status_manager.bot.send_message(
-                    chat_id=task.chat_id,
-                    text=otp_prompt(target, channel) if field == "otp" else (
-                        f"What {field} should I use for {target}? Reply to this message with only your {field}."
-                    ),
+                    chat_id=pending.reply_chat_id,
+                    text=otp_prompt(target, channel) if field == "otp" else account_input_prompt(target, field),
                     parse_mode=None,
                     reply_markup=ForceReply(selective=True),
                 )
@@ -204,20 +315,26 @@ class SecureController(Controller):
                 await pending.event.wait()
             if task.state != TaskState.RUNNING or pending.response is None:
                 return ActionResult(error="User input was cancelled; task stopped.")
+            current_url = await browser_session.get_current_page_url()
+            if not validate_origin(current_url, target)[0]:
+                return ActionResult(error="Security violation: Page changed origin during the input request.")
+            if task.state != TaskState.RUNNING:
+                return ActionResult(error="Task stopped during the input request.")
             if field == "otp":
                 # Keep the code out of model messages, tool results, and persisted task data.
-                current_url = await browser_session.get_current_page_url()
-                if not validate_origin(current_url, target)[0]:
-                    return ActionResult(error="Security violation: Page changed origin during the code request.")
-                if task.state != TaskState.RUNNING:
-                    return ActionResult(error="Task stopped during the code request.")
                 slot = f"{get_domain_slug(target)}_otp"
                 self.sensitive_data.setdefault(credential_scope(target), {})[slot] = pending.response
                 return ActionResult(extracted_content=(
                     f"One-time code ready for {target}. Use the standard input action with <secret>{slot}</secret>."
                 ))
-            # The response is ordinary account information, intentionally visible to the agent.
-            return ActionResult(extracted_content=f"User-provided {field} for {target}: {pending.response}")
+            value = normalize_account_detail(pending.response, field)
+            await self._save_account_detail(user_id, target, field, value)
+            # Saving is owner/domain bound; publishing also needs a fresh origin
+            # check in case the page changed during database IO.
+            current_url = await browser_session.get_current_page_url()
+            if not validate_origin(current_url, target)[0] or task.state != TaskState.RUNNING:
+                return ActionResult(error="Security violation: Page or task changed while saving account details.")
+            return self._publish_account_detail(target, field, value)
         except TimeoutError:
             if not task.is_terminal:
                 task.transition_to(TaskState.FAILED, status_message="Chat input timed out.", error="No reply received before the deadline.")
@@ -226,6 +343,16 @@ class SecureController(Controller):
             if not task.is_terminal:
                 task.transition_to(TaskState.FAILED, status_message="Chat input cancelled.")
             raise
+        except TelegramForbiddenError:
+            if not task.is_terminal:
+                task.transition_to(TaskState.FAILED, status_message="Private input chat unavailable.")
+            if task.chat_id != task.user_id:
+                await self.status_manager.bot.send_message(
+                    chat_id=task.chat_id,
+                    text="Please open a private chat with me, then retry this task so I can ask for your account details privately.",
+                    parse_mode=None,
+                )
+            return ActionResult(error="The task owner must open a private chat before supplying account details.")
         except Exception:
             if not task.is_terminal:
                 task.transition_to(TaskState.FAILED, status_message="Unable to request chat input.")
@@ -303,7 +430,8 @@ class SecureController(Controller):
         @self.action(
             "Load existing credentials for the active website from the vault; returns only scoped "
             "<secret> placeholders for the standard input action. Prefer need_password or need_api_key "
-            "when a particular secret is needed. Usernames and email addresses can be requested with ask_user."
+            "when a particular secret is needed. Use ask_user for username/email, ask_phone_number for "
+            "the phone number, and ask_country_code only if the website needs a separate calling code."
         )
         async def request_domain_credentials(domain: str, browser_session: Optional[BrowserSession] = None) -> ActionResult:
             return await load_credentials(domain, browser_session)
@@ -312,7 +440,8 @@ class SecureController(Controller):
             "Get the password for the active website domain. Use an existing vaulted password if present; "
             "otherwise pause the task and send the user a secure link with one password field. "
             "Returns only a <secret> placeholder for the standard input action, never plaintext. "
-            "Call ask_user separately if a username or email is missing. Never request passwords in chat."
+            "Call ask_user for a missing username/email or ask_phone_number for a missing phone number. "
+            "Never request passwords in chat."
         )
         async def need_password(domain: str, browser_session: Optional[BrowserSession] = None) -> ActionResult:
             return await load_credentials(domain, browser_session, "password")
@@ -327,12 +456,53 @@ class SecureController(Controller):
             return await load_credentials(domain, browser_session, "api_key")
 
         @self.action(
-            "Ask the task owner in Telegram for a missing username or email for the active website, "
-            "then wait for their reply and return it to this browser task. field must be username or email. "
-            "Use only for ordinary account identifiers; never for passwords, API keys, OTPs, tokens or recovery codes."
+            "Get a username or email for the active website. Reuse its saved, domain-bound "
+            "vault value, or ask the authenticated task owner privately and save their reply encrypted "
+            "for this domain. Returns only scoped <secret> placeholders, never the actual value. "
+            "Use only when needed for the user's requested task. Use ask_phone_number for a phone number "
+            "and ask_country_code separately for a required calling code. "
+            "force_refresh is only for an explicitly requested change or a rejected "
+            "saved value. Never use this for passwords, API keys, OTPs, tokens or recovery codes."
         )
-        async def ask_user(domain: str, field: Literal["username", "email"], browser_session: Optional[BrowserSession] = None) -> ActionResult:
-            return await self._ask_user(domain, field, browser_session)
+        async def ask_user(
+            domain: str, field: Literal["username", "email"], force_refresh: bool = False,
+            browser_session: Optional[BrowserSession] = None,
+        ) -> ActionResult:
+            return await self._ask_user(
+                domain, field, browser_session, force_refresh=force_refresh,
+            )
+
+        @self.action(
+            "Get only the task owner's phone number for the active website's phone-number field. "
+            "Reuse its domain-bound vault value or ask the owner privately and save their reply encrypted. "
+            "Returns one phone_number placeholder containing only the supplied digits, preserving leading "
+            "zeros. It never infers a country, adds a prefix, creates international formats, or asks for a "
+            "country code. Use this placeholder alone in a normal phone field, including fields next to a "
+            "country selector or fixed prefix. Never prepend country-code metadata to that field. "
+            "Use ask_country_code separately only if the website actually needs a calling code. "
+            "force_refresh is only for an explicitly requested change or a rejected saved number."
+        )
+        async def ask_phone_number(
+            domain: str, force_refresh: bool = False, browser_session: Optional[BrowserSession] = None,
+        ) -> ActionResult:
+            return await self._ask_user(domain, "phone", browser_session, force_refresh=force_refresh)
+
+        @self.action(
+            "Get only the task owner's country calling code, such as +1 or +44, for the active website. "
+            "Use only when the website explicitly requires a country-code field or selector that still "
+            "needs this information. If the website already has the correct code selected or fixed, "
+            "leave it in place. Never call merely to save, normalize, or enter a phone number. "
+            "Reuse the domain-bound saved code or ask the owner privately and save it encrypted, "
+            "independently of their phone number. Returns a country_code placeholder and public calling-code "
+            "metadata for choosing a country option. If the control already supplies '+', use the returned "
+            "digits metadata there. Use only in the country-code control; never insert "
+            "a full phone number here or automatically attach this code to a phone-number placeholder. "
+            "force_refresh is only for an explicitly requested change or a rejected saved code."
+        )
+        async def ask_country_code(
+            domain: str, force_refresh: bool = False, browser_session: Optional[BrowserSession] = None,
+        ) -> ActionResult:
+            return await self._ask_user(domain, "country_code", browser_session, force_refresh=force_refresh)
 
         @self.action(
             "Ask the task owner in Telegram for a one-time login or verification code, then wait for their reply. "

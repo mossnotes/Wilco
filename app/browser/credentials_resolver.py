@@ -10,6 +10,7 @@ from app.db.models import EncryptedCredential
 from app.db.repository import CredentialRepository, UserRepository
 from app.security.vault import decrypt_secret
 from app.security.origins import clean_domain
+from app.security.account_details import account_placeholders
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,22 @@ def unpack_credentials(domain: str, credentials: List[EncryptedCredential]) -> D
             secrets.setdefault(f"{slug}_user", credential.username_or_identifier)
         if suffix := suffixes.get(credential.auth_type):
             secrets[f"{slug}_{suffix}"] = decrypt_secret(credential.encrypted_blob, settings.vault_key_bytes)
+        elif credential.auth_type in ("username", "email", "phone"):
+            value = decrypt_secret(credential.encrypted_blob, settings.vault_key_bytes)
+            try:
+                slots = account_placeholders(slug, credential.auth_type, value)
+            except ValueError:
+                if credential.auth_type != "phone":
+                    raise
+                # Older phone rows contain combined international numbers.
+                # Ask for a fresh local number instead of injecting that prefix.
+                continue
+            secrets.update(slots)
+        # Country codes are loaded only by ask_country_code, never alongside a
+        # password or phone number during general credential resolution.
+    # Preserve legacy generic login slots while keeping the explicit fields distinct.
+    if login := secrets.get(f"{slug}_username") or secrets.get(f"{slug}_email"):
+        secrets[f"{slug}_user"] = login
     return secrets
 
 

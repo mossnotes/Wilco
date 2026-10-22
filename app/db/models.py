@@ -91,7 +91,7 @@ class IdentityToken(Base):
 
 class EncryptedCredential(Base):
     """
-    Encrypted secret (password, API key, or TOTP seed) in the AES-256-GCM vault.
+    Domain-bound secret or account identifier in the AES-256-GCM vault.
     Never stores plaintext secrets.
     """
     __tablename__ = "encrypted_credentials"
@@ -106,7 +106,7 @@ class EncryptedCredential(Base):
         String(255), index=True, nullable=False
     )
     auth_type: Mapped[str] = mapped_column(
-        String(50), nullable=False  # "password" | "api_key" | "totp_seed"
+        String(50), nullable=False  # password | api_key | totp_seed | username | email | phone | country_code
     )
     username_or_identifier: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True

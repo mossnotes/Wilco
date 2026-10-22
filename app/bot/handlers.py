@@ -14,7 +14,8 @@ from app.config import settings
 from app.db.engine import async_session_factory
 from app.db.repository import TaskRepository
 from app.security.sanitizer import contains_sensitive_data
-from app.tasks.chat_input import OTP_PROMPT_PREFIX, normalize_otp
+from app.security.account_details import normalize_account_detail
+from app.tasks.chat_input import ACCOUNT_PROMPT_PREFIXES, OTP_PROMPT_PREFIX, normalize_otp
 from app.tasks.registry import task_registry
 from app.tasks.state import TaskRecord, TaskState
 
@@ -92,7 +93,7 @@ async def _handle_text_message(message: Message) -> None:
         if user_id != pending.task.user_id:
             return
         reply = getattr(message, "reply_to_message", None)
-        if not reply or reply.message_id != pending.prompt_message_id:
+        if chat_id != pending.reply_chat_id or not reply or reply.message_id != pending.prompt_message_id:
             # Only a new, ordinary language request can reach the LLM while
             # paused. Replies and code/identifier-shaped values never do.
             if (
@@ -100,7 +101,7 @@ async def _handle_text_message(message: Message) -> None:
                 or len(text) > 320 or "\n" in text or not _is_paused_control_request(text)
             ):
                 await message.answer(
-                    "Please reply to my input question. To stop instead, send 'stop the current task' as a new message.",
+                    "Please reply to my input question in our private chat. To stop instead, send 'stop the current task' as a new message.",
                     parse_mode=None,
                 )
                 return
@@ -116,9 +117,12 @@ async def _handle_text_message(message: Message) -> None:
                     await message.answer("Please reply with only the 4–12 character code, using letters or numbers.")
                     return
                 text = code
-            elif len(text) > 320 or "\n" in text:
-                await message.answer("Please send only the requested username or email, on one line.")
-                return
+            else:
+                try:
+                    text = normalize_account_detail(text, pending.field)
+                except ValueError as exc:
+                    await message.answer(str(exc), parse_mode=None)
+                    return
             record = pending.task.model_copy(deep=True)
             record.metadata.pop("chat_input_field", None)
             record.transition_to(TaskState.RUNNING, status_message=(
@@ -138,14 +142,14 @@ async def _handle_text_message(message: Message) -> None:
         await message.answer("Got it. Thanks!")
         return
 
-    # Replies to an expired/consumed OTP prompt must not become fresh model requests.
+    # Replies to expired/consumed input prompts must not become fresh model requests.
     reply = getattr(message, "reply_to_message", None)
     if (
         reply and isinstance(reply.text, str)
-        and (reply.text.startswith(OTP_PROMPT_PREFIX) or f"\n\n{OTP_PROMPT_PREFIX}" in reply.text)
+        and any(reply.text.startswith(prefix) or f"\n\n{prefix}" in reply.text for prefix in (OTP_PROMPT_PREFIX, *ACCOUNT_PROMPT_PREFIXES))
         and reply.from_user and reply.from_user.id == message.bot.id
     ):
-        await message.answer("That code request has expired or has already been answered.")
+        await message.answer("That input request has expired or has already been answered.")
         return
 
     # Load history before appending this message, so the current turn appears once.

@@ -108,17 +108,18 @@ async def test_local_executor_fails_closed_for_unhandled_tools(route):
     msg.answer.assert_not_awaited()
 
 
-@pytest.mark.parametrize("field", ["username", "otp"])
-async def test_natural_language_stop_remains_available_during_input_wait(monkeypatch, field):
+@pytest.mark.parametrize("field", ["username", "otp", "phone"])
+@pytest.mark.parametrize("task_chat_id", [123, -100])
+async def test_natural_language_stop_remains_available_during_input_wait(monkeypatch, field, task_chat_id):
     registry = ActiveTaskRegistry()
     monkeypatch.setattr("app.bot.tools.task_registry", registry)
     monkeypatch.setattr("app.bot.handlers.task_registry", registry)
     route = AsyncMock(return_value=MessageDecision(route="cancel"))
     monkeypatch.setattr("app.bot.handlers.route_message", route)
-    task = TaskRecord(user_id=123, chat_id=123, prompt="Login", state=TaskState.NEEDS_INPUT)
+    task = TaskRecord(user_id=123, chat_id=task_chat_id, prompt="Login", state=TaskState.NEEDS_INPUT)
     running = asyncio.create_task(asyncio.Event().wait())
-    registry.register(123, task, running, SimpleNamespace(update=AsyncMock()))
-    pending = registry.register_chat_input(task, field, time.time() + 100)
+    registry.register(task_chat_id, task, running, SimpleNamespace(update=AsyncMock()))
+    pending = registry.register_chat_input(task, field, time.time() + 100, reply_chat_id=123)
     pending.prompt_message_id = 77
     try:
         await handle_text_message(message("Stop the current task"))
@@ -128,6 +129,25 @@ async def test_natural_language_stop_remains_available_during_input_wait(monkeyp
     finally:
         running.cancel()
         await asyncio.gather(running, return_exceptions=True)
+
+
+@pytest.mark.parametrize("requester", [123, 456, None])
+async def test_private_input_cancellation_is_bound_to_the_task_owner(monkeypatch, requester):
+    registry = ActiveTaskRegistry()
+    monkeypatch.setattr("app.bot.tools.task_registry", registry)
+    task = TaskRecord(user_id=123, chat_id=-100, prompt="Login", state=TaskState.NEEDS_INPUT)
+    running = MagicMock()
+    running.done.return_value = False
+    registry.register(-100, task, running, SimpleNamespace(update=AsyncMock()))
+    registry.register_chat_input(task, "phone", time.time() + 100, reply_chat_id=123)
+    msg = message("Stop the current task", user_id=requester)
+    await execute_assistant_tool("cancel", msg)
+    if requester == 123:
+        running.cancel.assert_called_once()
+        assert task.state == TaskState.FAILED
+    else:
+        running.cancel.assert_not_called()
+        assert task.state == TaskState.NEEDS_INPUT
 
 
 @pytest.mark.parametrize("text", [

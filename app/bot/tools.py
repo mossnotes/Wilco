@@ -58,12 +58,14 @@ ASSISTANT_TOOLS = (
     )),
     AssistantTool("cancel_current_task", "cancel", (
         "Stop the requesting user's currently running or paused Wilco task in this "
-        "chat. Use only for a clear request to stop/cancel the assistant's current "
+        "chat, or the task awaiting their input in this private chat. Use only for "
+        "a clear request to stop/cancel the assistant's current "
         "work, such as 'stop the current task'. Never use for a question about "
         "cancellation, negated or quoted instructions, or cancellation of an "
         "external order, subscription, booking, or account. Ambiguous requests need "
         "clarification. Takes no arguments: the application verifies ownership and "
-        "selects the active task in this chat. Cannot target another user/chat, "
+        "selects the active task or the task bound to this private input request. "
+        "Cannot target another user's task or an unrelated chat, "
         "cancel completed work, undo website actions, or guarantee rollback. "
         "The application reports whether a task was actually stopped."
     )),

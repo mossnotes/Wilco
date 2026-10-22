@@ -3,9 +3,31 @@
 import re
 from typing import Literal
 
-ChatInputField = Literal["username", "email", "otp"]
+ChatInputField = Literal["username", "email", "phone", "country_code", "otp"]
 OTPChannel = Literal["sms", "whatsapp", "email", "authenticator", "unknown"]
 OTP_PROMPT_PREFIX = "Enter the one-time code for "
+ACCOUNT_PROMPT_PREFIXES = (
+    "Enter your username for this website.",
+    "Enter your email for this website.",
+    "Enter your phone number for this website.",
+    "Enter the country calling code for this website.",
+)
+
+
+def account_input_prompt(
+    domain: str, field: Literal["username", "email", "phone", "country_code"],
+) -> str:
+    if field == "country_code":
+        return (
+            f"{domain} needs a country calling code. I'll save it securely for this website.\n\n"
+            "Enter the country calling code for this website. Reply with only the code."
+        )
+    label = "phone number" if field == "phone" else field
+    guidance = f"I need your {label} for {domain}. I'll save it securely for this website."
+    if field == "phone":
+        guidance += " Send just the number for the phone field, without a country code."
+    # Keep the final ForceReply bubble within the smallest message limit (80).
+    return f"{guidance}\n\nEnter your {label} for this website. Reply with only the {'number' if field == 'phone' else field}."
 
 
 def otp_prompt(domain: str, channel: OTPChannel) -> str:
