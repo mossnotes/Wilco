@@ -184,19 +184,19 @@ async def test_missing_credentials_webapp_roundtrip(async_client, monkeypatch):
         link = urlsplit(urls[0])
         response = await async_client.get(f"{link.path}?{link.query}", follow_redirects=True)
         assert response.status_code == 200
-        assert 'id="password" type="password"' in response.text
-        assert 'id="username"' in response.text
+        assert 'id="secret" name="secret" type="password"' in response.text
+        assert 'id="username"' not in response.text
+        assert 'id="totp_seed"' not in response.text
         assert "vercel.com" in response.text
         response = await async_client.post(f"/api/tasks/{task.task_id}/resolve-input", json={
-            "credentials": {"vercel.com": "  exact password  "}, "username": "me@example.com",
-            "totp_seed": "JBSW Y3DP EHPK 3PXP",
+            "credential_type": "password", "secret": "  exact password  ",
         })
         assert response.status_code == 200
         result = await asyncio.wait_for(action_task, 5)
         assert result.error is None
         assert shared["https://*.vercel.com"]["vercel_pass"] == "  exact password  "
-        assert shared["https://*.vercel.com"]["vercel_user"] == "me@example.com"
-        assert shared["https://*.vercel.com"]["vercel_bu_2fa_code"] == "JBSWY3DPEHPK3PXP"
+        assert "vercel_user" not in shared["https://*.vercel.com"]
+        assert "vercel_bu_2fa_code" not in shared["https://*.vercel.com"]
         assert task.state == TaskState.RUNNING
         assert task_registry.get_credential_input(task.task_id) is None
         assert "companion_url" not in task.metadata
@@ -284,7 +284,7 @@ async def test_submission_crossing_deadline_cannot_overwrite_failed_state(async_
         await asyncio.wait_for(ready.wait(), 5)
         async_client.cookies.set(SESSION_COOKIE_NAME, create_session_token(user.id, user.telegram_id))
         submission = asyncio.create_task(async_client.post(
-            f"/api/tasks/{task.task_id}/resolve-input", json={"credentials": {"vercel.com": "late-password"}},
+            f"/api/tasks/{task.task_id}/resolve-input", json={"credential_type": "password", "secret": "late-password"},
         ))
         await asyncio.wait_for(saving.wait(), 5)
         # The controller times out while the submission holds the persistence lock.

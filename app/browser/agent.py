@@ -15,9 +15,11 @@ SECURITY_INSTRUCTIONS = """
 CREDENTIAL VAULT SECURITY INSTRUCTIONS:
 1. When encountering an authentication, login, or verification page, NEVER ask the user to post their passwords, API keys, or TOTP seeds in chat.
 2. Use the standard input action with tagged placeholders, e.g. text='<secret>example_user</secret>' or text='<secret>example_pass</secret>'. browser-use substitutes the secret securely at execution time.
-3. If placeholders for the active domain are unavailable, call request_domain_credentials(domain='<active website domain>'). This loads all available credentials for that domain together. If they are missing, it pauses and asks the user through the secure WebApp; do not ask for credentials in chat.
+3. If a password placeholder is unavailable, call need_password(domain='<active website domain>'). For an API key, call need_api_key(domain='<active website domain>'). Each tool loads that secret from the vault or pauses and sends a secure single-field WebApp link. Never pass a secret as a tool argument or ask for it in chat.
 4. For two-factor authentication, use the provided placeholder ending in 'bu_2fa_code' with the standard input action. browser-use generates a fresh code when typing. Never type or expose the underlying TOTP seed.
 5. Only use placeholders for their associated domain. Never guess, extract, or echo plaintext secrets in thoughts, plans, results, or other tools. If credential entry times out or is cancelled, stop the task.
+6. If a username or email is missing, call ask_user(domain='<active website domain>', field='username' or 'email'). It asks the task owner in Telegram and returns their reply. Do not open the secure page for ordinary identifiers. Never use ask_user for an OTP, verification code, password, API key, token, recovery code, or other secret.
+7. When a website requires a one-time code that is not available through a saved authenticator seed, call need_otp(domain='<active website domain>', channel='sms', 'whatsapp', 'email', or 'authenticator'). Use channel='unknown' if the page does not identify where the code is delivered; never invent the delivery method. This asks the user in Telegram and tells them where to look. The tool returns a scoped <secret> placeholder for the standard input action. Do not ask them to use the Companion App for a one-time code, and never echo the code in text or other tools.
 """
 
 

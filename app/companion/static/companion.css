@@ -72,6 +72,9 @@ svg { display: block; flex-shrink: 0; }
 
 .form-stack { display: grid; gap: 24px; }
 .field { display: grid; gap: 8px; }
+.secret-field { position: relative; }
+.secret-field input { padding-right: 56px; }
+.secret-toggle { position: absolute; top: 2px; right: 2px; }
 label { font-size: 14px; }
 input, select, textarea { width: 100%; min-width: 0; border: 1px solid #dedede; border-radius: 4px; background: #fff; padding: 11px 12px; line-height: 1.5; }
 input, select { min-height: 48px; }

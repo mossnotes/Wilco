@@ -66,6 +66,8 @@ class ResolveInputRequest(BaseModel):
     credentials: Optional[Dict[str, str]] = None
     username: Optional[str] = Field(default=None, max_length=320)
     totp_seed: Optional[str] = Field(default=None, max_length=1024)
+    credential_type: Optional[Literal["password", "api_key"]] = None
+    secret: Optional[str] = Field(default=None, min_length=1, max_length=16384, repr=False)
 
 
 # ---------------------------------------------------------
@@ -205,7 +207,9 @@ async def task_needs_input_page(
 
     response = templates.TemplateResponse(
         request=request,
-        name="needs_input.html",
+        name={"password": "need_password.html", "api_key": "need_api_key.html"}.get(
+            task.metadata.get("credential_type"), "needs_input.html"
+        ),
         context={"task": task, "target_domain": target_domain},
     )
     response.headers["Cache-Control"] = "no-store"
@@ -355,8 +359,22 @@ async def resolve_task_input(
         if target_domain and (not pending or not pending.is_pending):
             raise HTTPException(status_code=409, detail="This credential request has expired")
         if req.approved:
+            credential_type = task.metadata.get("credential_type")
+            if credential_type:
+                if (
+                    credential_type not in ("password", "api_key")
+                    or req.credential_type != credential_type
+                    or not req.secret
+                    or req.credentials is not None
+                    or req.user_input is not None
+                    or req.username is not None
+                    or req.totp_seed is not None
+                ):
+                    raise HTTPException(status_code=400, detail="Provide only the requested secret in the secure form")
+            elif req.secret is not None or req.credential_type is not None:
+                raise HTTPException(status_code=400, detail="No matching secret request is pending")
             # Validate the entire payload before performing any vault writes.
-            credentials = {}
+            credentials = {target_domain: req.secret} if credential_type else {}
             for domain, secret in (req.credentials or {}).items():
                 domain = clean_domain(domain)
                 if not domain or not secret:
@@ -376,7 +394,7 @@ async def resolve_task_input(
                     raise HTTPException(status_code=400, detail="Invalid Base32 TOTP seed") from None
             for domain, secret in credentials.items():
                 await CredentialRepository.add_or_update_credential(
-                    session, user_id=user.id, site_domain=domain, auth_type="password",
+                    session, user_id=user.id, site_domain=domain, auth_type=credential_type or "password",
                     encrypted_blob=encrypt_secret(secret, settings.vault_key_bytes),
                     username_or_identifier=req.username,
                 )
@@ -394,7 +412,7 @@ async def resolve_task_input(
             )
         if pending and not pending.is_pending:
             raise HTTPException(status_code=409, detail="This credential request has expired")
-        for key in ("target_domain", "credential_input_deadline", "companion_url"):
+        for key in ("target_domain", "credential_type", "credential_input_deadline", "companion_url"):
             task.metadata.pop(key, None)
         await TaskRepository.save_task(session, task)
         # Commit before waking the browser: its next vault read uses another session.

@@ -76,7 +76,9 @@ request. Do not call a tool until the request is sufficiently clear. At most one
 browser handoff is allowed per message. When handing off, let the application's
 status card communicate progress rather than writing a separate acknowledgement.
 
-Never request passwords, API keys, OTPs, or TOTP seeds in chat. 
+Never request passwords, API keys, or TOTP setup seeds in chat. During an active
+browser task, the browser agent can request a one-time code through its dedicated
+Telegram tool. Do not collect one-time codes in a routing reply.
 """
 
 # This is a declaration, not an executable Python function exposed to the SDK.

@@ -45,7 +45,7 @@ def format_status_message(task: TaskRecord) -> str:
 
     # 4. If the task requires user input, give clear guidance on what to do next.
     # Secrets must never be entered in chat, so we direct the user to the companion app.
-    if task.state == TaskState.NEEDS_INPUT:
+    if task.state == TaskState.NEEDS_INPUT and not task.metadata.get("chat_input_field"):
         lines.append("")
         lines.append("👉 <i>Please open the Web Companion to provide the required input securely.</i>")
         if deadline := task.metadata.get("credential_input_deadline"):

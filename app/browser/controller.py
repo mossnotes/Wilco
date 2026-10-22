@@ -2,18 +2,20 @@ import asyncio
 import logging
 import math
 import time
-from typing import Any, Optional, Union
+from typing import Any, Literal, Optional, Union
 from urllib.parse import urlencode
 import uuid
 
 from browser_use import ActionResult, Controller
 from browser_use.browser.session import BrowserSession
+from aiogram.types import ForceReply
 
-from app.browser.credentials_resolver import SensitiveData, credential_scope, unpack_credentials
+from app.browser.credentials_resolver import SensitiveData, credential_scope, get_domain_slug, unpack_credentials
 from app.config import settings
 from app.db.engine import async_session_factory
 from app.db.repository import CredentialRepository, IdentityTokenRepository, TaskRepository, UserRepository
 from app.security.origins import clean_domain, validate_origin
+from app.tasks.chat_input import ChatInputField, OTPChannel, otp_prompt
 from app.tasks.registry import task_registry
 from app.tasks.state import TaskRecord, TaskState
 
@@ -52,7 +54,7 @@ class SecureController(Controller):
         actions = action.model_dump(exclude_unset=True)
         if not actions.get("input"):
             kwargs.pop("sensitive_data", None)
-        if actions.get("request_domain_credentials") and kwargs.get("action_timeout") is None:
+        if any(actions.get(name) is not None for name in ("request_domain_credentials", "need_password", "need_api_key", "ask_user", "need_otp")) and kwargs.get("action_timeout") is None:
             kwargs["action_timeout"] = CREDENTIAL_INPUT_TIMEOUT + 30
         return await super().act(action=action, browser_session=browser_session, **kwargs)
 
@@ -83,7 +85,7 @@ class SecureController(Controller):
             except Exception:
                 logger.warning("Could not update credential status for task %s", self.task.task_id)
 
-    async def _wait_for_credentials(self, domain: str) -> Optional[str]:
+    async def _wait_for_credentials(self, domain: str, credential_type: Optional[str] = None) -> Optional[str]:
         task = self.task
         if task is None or self.status_manager is None or self.telegram_id != task.user_id:
             return "Credentials are missing. Open the Wilco WebApp to add them, then retry."
@@ -103,6 +105,9 @@ class SecureController(Controller):
             "credential_input_deadline": deadline,
             "companion_url": companion_url,
         })
+        if credential_type:
+            task.metadata["credential_type"] = credential_type
+        logger.info("Task %s requesting secure input type=%s domain=%s", task.task_id, credential_type or "credentials", domain)
         task.transition_to(TaskState.NEEDS_INPUT, status_message=f"Waiting for {domain} credentials in the WebApp.")
         pending = task_registry.register_credential_input(task, domain, deadline)
         try:
@@ -144,7 +149,7 @@ class SecureController(Controller):
             # Serialize cleanup with submissions so a late commit cannot overwrite FAILED.
             async with pending.lock:
                 task_registry.clear_credential_input(task.task_id)
-                for key in ("target_domain", "credential_input_deadline", "companion_url"):
+                for key in ("target_domain", "credential_type", "credential_input_deadline", "companion_url"):
                     task.metadata.pop(key, None)
                 # Invalidate the link even when it was never opened.
                 try:
@@ -158,16 +163,86 @@ class SecureController(Controller):
                     logger.error("Could not persist credential request cleanup for task %s", task.task_id)
             await self._update_status()
 
+    async def _ask_user(
+        self, domain: str, field: ChatInputField, browser_session: Optional[BrowserSession],
+        channel: OTPChannel = "unknown",
+    ) -> ActionResult:
+        task = self.task
+        if field not in ("username", "email", "otp"):
+            return ActionResult(error="Only username, email, or one-time codes can be requested in chat.")
+        if not task or not self.status_manager or self.telegram_id != task.user_id or task.state != TaskState.RUNNING:
+            return ActionResult(error="No running task with an authenticated chat is available.")
+        target = clean_domain(domain)
+        if not browser_session or not target:
+            return ActionResult(error="An active browser and valid domain are required.")
+        try:
+            current_url = await browser_session.get_current_page_url()
+        except Exception:
+            return ActionResult(error="Could not verify active page URL.")
+        if not validate_origin(current_url, target)[0]:
+            return ActionResult(error="Security violation: Active page does not match the requested domain.")
+
+        deadline = time.time() + CREDENTIAL_INPUT_TIMEOUT
+        pending = task_registry.register_chat_input(task, field, deadline)
+        task.metadata["chat_input_field"] = field
+        task.transition_to(TaskState.NEEDS_INPUT, status_message=f"Waiting for your {field} in Telegram.")
+        logger.info("Task %s requesting chat input field=%s domain=%s", task.task_id, field, target)
+        try:
+            async with asyncio.timeout(max(0, deadline - time.time())):
+                await self._save_task()
+                await self._update_status()
+                prompt = await self.status_manager.bot.send_message(
+                    chat_id=task.chat_id,
+                    text=otp_prompt(target, channel) if field == "otp" else (
+                        f"What {field} should I use for {target}? Reply to this message with only your {field}."
+                    ),
+                    parse_mode=None,
+                    reply_markup=ForceReply(selective=True),
+                )
+                pending.prompt_message_id = prompt.message_id
+                await pending.event.wait()
+            if task.state != TaskState.RUNNING or pending.response is None:
+                return ActionResult(error="User input was cancelled; task stopped.")
+            if field == "otp":
+                # Keep the code out of model messages, tool results, and persisted task data.
+                current_url = await browser_session.get_current_page_url()
+                if not validate_origin(current_url, target)[0]:
+                    return ActionResult(error="Security violation: Page changed origin during the code request.")
+                if task.state != TaskState.RUNNING:
+                    return ActionResult(error="Task stopped during the code request.")
+                slot = f"{get_domain_slug(target)}_otp"
+                self.sensitive_data.setdefault(credential_scope(target), {})[slot] = pending.response
+                return ActionResult(extracted_content=(
+                    f"One-time code ready for {target}. Use the standard input action with <secret>{slot}</secret>."
+                ))
+            # The response is ordinary account information, intentionally visible to the agent.
+            return ActionResult(extracted_content=f"User-provided {field} for {target}: {pending.response}")
+        except TimeoutError:
+            if not task.is_terminal:
+                task.transition_to(TaskState.FAILED, status_message="Chat input timed out.", error="No reply received before the deadline.")
+            return ActionResult(error="Chat input timed out; task stopped.")
+        except asyncio.CancelledError:
+            if not task.is_terminal:
+                task.transition_to(TaskState.FAILED, status_message="Chat input cancelled.")
+            raise
+        except Exception:
+            if not task.is_terminal:
+                task.transition_to(TaskState.FAILED, status_message="Unable to request chat input.")
+            logger.error("Chat input request failed for task %s", task.task_id)
+            return ActionResult(error="Unable to request chat input; task stopped.")
+        finally:
+            async with pending.lock:
+                task_registry.clear_chat_input(task.chat_id)
+                pending.response = None
+                task.metadata.pop("chat_input_field", None)
+                await self._save_task()
+            await self._update_status()
+
     def _register_secure_actions(self) -> None:
-        @self.action(
-            "Request all available credentials for the active website domain from the secure vault. "
-            "Returns only placeholder names, such as <secret>example_user</secret> and "
-            "<secret>example_pass</secret>, for the standard input action. "
-            "If missing, pauses and asks the user through the secure WebApp."
-        )
-        async def request_domain_credentials(
+        async def load_credentials(
             domain: str,
             browser_session: Optional[BrowserSession] = None,
+            credential_type: Optional[str] = None,
         ) -> ActionResult:
             if browser_session is None:
                 return ActionResult(error="No active browser session available.")
@@ -189,12 +264,16 @@ class SecureController(Controller):
 
             async with async_session_factory() as db:
                 credentials = await CredentialRepository.get_credentials_for_domain(db, user_id, target)
+            if credential_type:
+                credentials = [c for c in credentials if c.auth_type == credential_type]
             if not credentials:
-                error = await self._wait_for_credentials(target)
+                error = await self._wait_for_credentials(target, credential_type or "password")
                 if error:
                     return ActionResult(error=error)
                 async with async_session_factory() as db:
                     credentials = await CredentialRepository.get_credentials_for_domain(db, user_id, target)
+                if credential_type:
+                    credentials = [c for c in credentials if c.auth_type == credential_type]
                 if not credentials:
                     return ActionResult(error="No credentials were saved for the requested domain.")
             try:
@@ -216,6 +295,53 @@ class SecureController(Controller):
                 return ActionResult(error="Task stopped during the credential request.")
             # Mutate, never replace, the shared dictionary used by Agent and MessageManager.
             # Navigation stays open for multi-hop logins; upstream scopes substitution by origin.
-            self.sensitive_data[credential_scope(target)] = secrets
+            self.sensitive_data.setdefault(credential_scope(target), {}).update(secrets)
             placeholders = ", ".join(f"<secret>{name}</secret>" for name in sorted(secrets))
             return ActionResult(extracted_content=f"Credentials ready for {target}. Use the standard input action with: {placeholders}")
+
+        @self.action(
+            "Load existing credentials for the active website from the vault; returns only scoped "
+            "<secret> placeholders for the standard input action. Prefer need_password or need_api_key "
+            "when a particular secret is needed. Usernames and email addresses can be requested with ask_user."
+        )
+        async def request_domain_credentials(domain: str, browser_session: Optional[BrowserSession] = None) -> ActionResult:
+            return await load_credentials(domain, browser_session)
+
+        @self.action(
+            "Get the password for the active website domain. Use an existing vaulted password if present; "
+            "otherwise pause the task and send the user a secure link with one password field. "
+            "Returns only a <secret> placeholder for the standard input action, never plaintext. "
+            "Call ask_user separately if a username or email is missing. Never request passwords in chat."
+        )
+        async def need_password(domain: str, browser_session: Optional[BrowserSession] = None) -> ActionResult:
+            return await load_credentials(domain, browser_session, "password")
+
+        @self.action(
+            "Get an API key for the active website domain. Use an existing vaulted API key if present; "
+            "otherwise pause the task and send the user a secure link with one API key field. "
+            "Returns only a scoped <secret> placeholder for the standard input action, never plaintext. "
+            "Never ask for an API key in chat or use this for a password."
+        )
+        async def need_api_key(domain: str, browser_session: Optional[BrowserSession] = None) -> ActionResult:
+            return await load_credentials(domain, browser_session, "api_key")
+
+        @self.action(
+            "Ask the task owner in Telegram for a missing username or email for the active website, "
+            "then wait for their reply and return it to this browser task. field must be username or email. "
+            "Use only for ordinary account identifiers; never for passwords, API keys, OTPs, tokens or recovery codes."
+        )
+        async def ask_user(domain: str, field: Literal["username", "email"], browser_session: Optional[BrowserSession] = None) -> ActionResult:
+            return await self._ask_user(domain, field, browser_session)
+
+        @self.action(
+            "Ask the task owner in Telegram for a one-time login or verification code, then wait for their reply. "
+            "domain must match the active website. Set channel to sms, whatsapp, email, or authenticator "
+            "only when the current page identifies that delivery method; otherwise use unknown. "
+            "The prompt tells the user where to find the code. Returns a scoped <secret> placeholder "
+            "for the standard input action; the actual code is not returned to the model or saved in the vault. "
+            "Use for one-time codes only, never passwords, API keys, recovery codes, or authenticator setup seeds."
+        )
+        async def need_otp(
+            domain: str, channel: OTPChannel = "unknown", browser_session: Optional[BrowserSession] = None,
+        ) -> ActionResult:
+            return await self._ask_user(domain, "otp", browser_session, channel)

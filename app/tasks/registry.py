@@ -5,6 +5,7 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from app.config import settings
+from app.tasks.chat_input import ChatInputField
 from app.tasks.state import TaskRecord, TaskState
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,27 @@ class CredentialInputRequest:
     task: TaskRecord
     domain: str
     deadline: float
+    event: asyncio.Event = field(default_factory=asyncio.Event)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    @property
+    def is_pending(self) -> bool:
+        return (
+            self.task.state == TaskState.NEEDS_INPUT
+            and not self.event.is_set()
+            and time.time() < self.deadline
+        )
+
+
+@dataclass
+class ChatInputRequest:
+    """A reply bound to one task, sender, and Telegram prompt; values stay in memory."""
+
+    task: TaskRecord
+    field: ChatInputField
+    deadline: float
+    prompt_message_id: Optional[int] = None
+    response: Optional[str] = field(default=None, repr=False)
     event: asyncio.Event = field(default_factory=asyncio.Event)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -46,6 +68,20 @@ class ActiveTaskRegistry:
         # Mapping task_id -> (TaskRecord, asyncio.Task, status_manager)
         self._active_by_id: Dict[str, Tuple[TaskRecord, asyncio.Task, Any]] = {}
         self._credential_inputs: Dict[str, CredentialInputRequest] = {}
+        self._chat_inputs: Dict[int, ChatInputRequest] = {}
+
+    def register_chat_input(self, task: TaskRecord, field_name: ChatInputField, deadline: float) -> ChatInputRequest:
+        if task.chat_id in self._chat_inputs:
+            raise RuntimeError("A chat input request is already pending in this chat.")
+        pending = ChatInputRequest(task=task, field=field_name, deadline=deadline)
+        self._chat_inputs[task.chat_id] = pending
+        return pending
+
+    def get_chat_input(self, chat_id: int) -> Optional[ChatInputRequest]:
+        return self._chat_inputs.get(chat_id)
+
+    def clear_chat_input(self, chat_id: int) -> None:
+        self._chat_inputs.pop(chat_id, None)
 
     def register_credential_input(self, task: TaskRecord, domain: str, deadline: float) -> CredentialInputRequest:
         if task.task_id in self._credential_inputs:

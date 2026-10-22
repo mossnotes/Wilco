@@ -11,8 +11,9 @@ from app.config import settings
 from app.db.engine import async_session_factory
 from app.db.repository import IdentityTokenRepository, TaskRepository, UserRepository
 from app.security.sanitizer import contains_sensitive_data
+from app.tasks.chat_input import OTP_PROMPT_PREFIX, normalize_otp
 from app.tasks.registry import task_registry
-from app.tasks.state import TaskRecord
+from app.tasks.state import TaskRecord, TaskState
 
 logger = logging.getLogger(__name__)
 router = Router(name="main_router")
@@ -56,7 +57,8 @@ async def handle_start(message: Message) -> None:
         f"👋 Hello <b>{user_name}</b>! I am <b>Wilco</b>, your Autonomous Browser & Tasks Assistant.\n\n"
         "I can automate tasks on the web using a managed browser.\n\n"
         "🔒 <b>Zero-Knowledge Security:</b>\n"
-        "• Passwords, API keys, and OTPs must <b>never</b> be pasted in this chat.\n"
+        "• Passwords, API keys, and authenticator setup seeds belong in the Companion App.\n"
+        "• When a website needs a one-time code, I will ask you to reply here and tell you where to find it.\n"
         "• Click the button below to link your account and manage vaulted credentials in our secure web companion enclave.\n\n"
         "Send me a prompt (e.g. <i>\"Check my deployments on Vercel\"</i>) to start a task!"
     )
@@ -135,6 +137,56 @@ async def handle_text_message(message: Message) -> None:
             "👉 Please use the <b>Wilco Companion App</b> (/login) to securely add credentials to your encrypted vault."
         )
         await message.answer(warning_text)
+        return
+
+    # Resume task-bound input before routing; one-time codes must bypass LLM logs.
+    pending = task_registry.get_chat_input(chat_id)
+    if pending:
+        if user_id != pending.task.user_id:
+            return
+        async with pending.lock:
+            if not pending.is_pending:
+                await message.answer("That input request has expired.")
+                return
+            reply = getattr(message, "reply_to_message", None)
+            if not reply or reply.message_id != pending.prompt_message_id:
+                await message.answer("Please reply to my input question so I can resume your task.")
+                return
+            if pending.field == "otp":
+                code = normalize_otp(text)
+                if code is None:
+                    await message.answer("Please reply with only the 4–12 character code, using letters or numbers.")
+                    return
+                text = code
+            elif len(text) > 320 or "\n" in text:
+                await message.answer("Please send only the requested username or email, on one line.")
+                return
+            record = pending.task.model_copy(deep=True)
+            record.metadata.pop("chat_input_field", None)
+            record.transition_to(TaskState.RUNNING, status_message=(
+                "One-time code received. Resuming task." if pending.field == "otp"
+                else "Account information received. Resuming task."
+            ))
+            async with async_session_factory() as session:
+                await TaskRepository.save_task(session, record)
+                await session.commit()
+            if not pending.is_pending:
+                return
+            pending.task.metadata = record.metadata
+            pending.task.transition_to(TaskState.RUNNING, status_message=record.status_message)
+            pending.response = text
+            pending.event.set()
+            logger.info("Task %s received chat input field=%s", record.task_id, pending.field)
+        await message.answer("Received. Continuing your browser task.")
+        return
+
+    # Replies to an expired/consumed OTP prompt must not become fresh model requests.
+    reply = getattr(message, "reply_to_message", None)
+    if (
+        reply and isinstance(reply.text, str) and reply.text.startswith(OTP_PROMPT_PREFIX)
+        and reply.from_user and reply.from_user.id == message.bot.id
+    ):
+        await message.answer("That code request has expired or has already been answered.")
         return
 
     # 2. Decide whether this message needs a browser before creating any task.

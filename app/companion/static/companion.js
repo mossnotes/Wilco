@@ -66,6 +66,24 @@
         field.addEventListener("input", () => field.removeAttribute("aria-invalid"));
     });
 
+    document.querySelectorAll("[data-toggle-secret]").forEach(button => {
+        const input = document.getElementById(button.getAttribute("aria-controls"));
+        function mask() {
+            input.type = "password";
+            button.setAttribute("aria-pressed", "false");
+            button.querySelector(".eye-slash").setAttribute("hidden", "");
+        }
+        button.addEventListener("click", () => {
+            const visible = input.type === "password";
+            input.type = visible ? "text" : "password";
+            button.setAttribute("aria-pressed", String(visible));
+            button.querySelector(".eye-slash").toggleAttribute("hidden", !visible);
+        });
+        input.form.addEventListener("reset", mask);
+        document.addEventListener("visibilitychange", () => { if (document.hidden) mask(); });
+        window.addEventListener("pagehide", () => { input.value = ""; mask(); });
+    });
+
     document.querySelectorAll("dialog").forEach(dialog => {
         dialog.querySelectorAll("[data-close-dialog]").forEach(button => {
             button.addEventListener("click", () => dialog.close());
@@ -206,7 +224,10 @@
             event.preventDefault();
             if (expired() || resolveForm.getAttribute("aria-busy") === "true" || !validate(resolveForm, ui.submit_failed)) return;
             const payload = { approved: true };
-            if (targetDomain) {
+            if (resolveForm.dataset.credentialType) {
+                payload.credential_type = resolveForm.dataset.credentialType;
+                payload.secret = document.getElementById("secret").value;
+            } else if (targetDomain) {
                 payload.credentials = { [targetDomain]: document.getElementById("password").value };
                 payload.username = document.getElementById("username").value.trim() || null;
                 payload.totp_seed = document.getElementById("totp_seed").value.trim() || null;
