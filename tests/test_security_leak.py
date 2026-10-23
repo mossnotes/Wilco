@@ -39,6 +39,68 @@ class TypedEvent:
         return {}
 
 
+def input_browser_at(url="https://vercel.com/login"):
+    browser = MagicMock()
+    browser.get_current_page_url = AsyncMock(return_value=url)
+    browser.browser_profile = SimpleNamespace(allowed_domains=None)
+    browser.agent_focus_target_id = "target"
+    browser.session_manager.get_target.return_value = SimpleNamespace(url=url)
+    browser.get_element_by_index = AsyncMock(return_value=EnhancedDOMTreeNode(
+        node_id=1, backend_node_id=101, node_type=NodeType.ELEMENT_NODE, node_name="INPUT",
+        node_value="", attributes={"type": "password"}, is_scrollable=False, is_visible=True,
+        absolute_position=None, target_id="target", frame_id="frame", session_id="session",
+        content_document=None, shadow_root_type=None, shadow_roots=None, parent_node=None,
+        children_nodes=None, ax_node=None, snapshot_node=None,
+    ))
+    browser.highlight_interaction_element = AsyncMock()
+    browser.event_bus.dispatch.return_value = TypedEvent()
+    return browser
+
+
+@pytest.mark.parametrize("text, url, value", [
+    ("<secret>need_password(domain='auth.wikimedia.org')</secret>", "https://auth.wikimedia.org/login", None),
+    ("<secret>need_password(domain='auth.wikimedia.org')</secret>", "https://auth.wikimedia.org/login", CANARY_PASSWORD),
+    ("<secret>wikimedia_pass</secret>", "https://auth.wikimedia.org/login", None),
+    ("<secret>wikimedia_pass</secret>", "https://auth.wikimedia.org/login", ""),
+    ("<secret>wikimedia_pass</secret>", "https://attacker.com/login", CANARY_PASSWORD),
+    ("<secret>wikimedia_pass</secret>", "http://auth.wikimedia.org/login", CANARY_PASSWORD),
+    ("<secret>wikimedia_pass</secret>", "about:blank", CANARY_PASSWORD),
+    ("<secret>missing</secret>", "https://auth.wikimedia.org/login", CANARY_PASSWORD),
+    ("<secret>wikimedia_pass</secret><secret>missing</secret>", "https://auth.wikimedia.org/login", CANARY_PASSWORD),
+    ("<secret>wikimedia_pass", "https://auth.wikimedia.org/login", CANARY_PASSWORD),
+    ("wikimedia_pass</secret>", "https://auth.wikimedia.org/login", CANARY_PASSWORD),
+    ("<secret></secret>", "https://auth.wikimedia.org/login", CANARY_PASSWORD),
+])
+async def test_native_input_blocks_unresolved_secret_tags_before_typing(text, url, value):
+    data = {} if value is None else {"https://*.wikimedia.org": {"wikimedia_pass": value}}
+    controller = SecureController(sensitive_data=data)
+    browser = input_browser_at(url)
+    action = controller.registry.create_action_model()(input={"index": 6, "text": text})
+
+    result = await controller.act(action, browser_session=browser, sensitive_data=data)
+
+    assert result.error and "placeholder" in result.error
+    assert "need_password" in result.error
+    browser.get_element_by_index.assert_not_awaited()
+    browser.event_bus.dispatch.assert_not_called()
+    assert CANARY_PASSWORD not in result.model_dump_json()
+
+
+@pytest.mark.parametrize("text", ["Wikimedia", ""])
+async def test_native_input_still_types_plain_text_and_clears_fields(text):
+    controller = SecureController()
+    browser = input_browser_at()
+    action = controller.registry.create_action_model()(input={"index": 1, "text": text})
+
+    result = await controller.act(action, browser_session=browser)
+
+    assert result.error is None
+    event = browser.event_bus.dispatch.call_args.args[0]
+    assert isinstance(event, TypeTextEvent)
+    assert event.text == text
+    assert event.clear is True
+
+
 @pytest.mark.parametrize("auth_type, slot, secret", [
     ("password", "vercel_pass", CANARY_PASSWORD),
     ("api_key", "vercel_api_key", CANARY_API_KEY),
@@ -53,20 +115,7 @@ async def test_native_input_keeps_vault_secrets_out_of_results_and_logs(auth_typ
         )
         await db.commit()
     controller = SecureController(user_id=user.id)
-    browser = MagicMock()
-    browser.get_current_page_url = AsyncMock(return_value="https://vercel.com/login")
-    browser.browser_profile = SimpleNamespace(allowed_domains=None)
-    browser.agent_focus_target_id = "target"
-    browser.session_manager.get_target.return_value = SimpleNamespace(url="https://vercel.com/login")
-    browser.get_element_by_index = AsyncMock(return_value=EnhancedDOMTreeNode(
-        node_id=1, backend_node_id=101, node_type=NodeType.ELEMENT_NODE, node_name="INPUT",
-        node_value="", attributes={"type": "password"}, is_scrollable=False, is_visible=True,
-        absolute_position=None, target_id="target", frame_id="frame", session_id="session",
-        content_document=None, shadow_root_type=None, shadow_roots=None, parent_node=None,
-        children_nodes=None, ax_node=None, snapshot_node=None,
-    ))
-    browser.highlight_interaction_element = AsyncMock()
-    browser.event_bus.dispatch.return_value = TypedEvent()
+    browser = input_browser_at()
     requested = await controller.registry.registry.actions["request_domain_credentials"].function(
         domain="vercel.com", browser_session=browser,
     )

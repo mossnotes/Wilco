@@ -7,6 +7,7 @@ from browser_use import Agent, Browser, Controller
 from app.browser.controller import SecureController
 from app.browser.credentials_resolver import SensitiveData
 from app.browser.llm import get_llm
+from app.personality import PERSONALITY_INSTRUCTIONS
 from app.tasks.state import TaskRecord
 
 logger = logging.getLogger(__name__)
@@ -14,8 +15,8 @@ logger = logging.getLogger(__name__)
 SECURITY_INSTRUCTIONS = """
 CREDENTIAL VAULT SECURITY INSTRUCTIONS:
 1. When encountering an authentication, login, or verification page, NEVER ask the user to post their passwords, API keys, or TOTP seeds in chat.
-2. Use the standard input action with tagged placeholders, e.g. text='<secret>example_user</secret>' or text='<secret>example_pass</secret>'. browser-use substitutes the secret securely at execution time.
-3. If a password placeholder is unavailable, call need_password(domain='<active website domain>'). For an API key, call need_api_key(domain='<active website domain>'). Each tool loads that secret from the vault or pauses and sends a secure single-field WebApp link. Never pass a secret as a tool argument or ask for it in chat.
+2. Use the standard input action with only the exact tagged placeholders returned by a credential tool or listed as available for the active domain. browser-use substitutes the secret securely at execution time.
+3. If a password placeholder is unavailable, execute need_password as a separate browser action with domain set to the active website's host. For an API key, execute need_api_key. Wait for the tool result before the next input action, then copy its exact returned <secret>placeholder_name</secret>. Secret tags contain only available placeholder names, never tool names, function calls, or expressions. Each tool loads that secret from the vault or pauses and sends a secure single-field WebApp link. Never pass a secret as a tool argument or ask for it in chat.
 4. For two-factor authentication, use the provided placeholder ending in 'bu_2fa_code' with the standard input action. browser-use generates a fresh code when typing. Never type or expose the underlying TOTP seed.
 5. Only use placeholders for their associated domain. Never guess, extract, or echo plaintext secrets in thoughts, plans, results, or other tools. If credential entry times out or is cancelled, stop the task.
 6. For a username or email, first use a matching available scoped placeholder. Otherwise call ask_user(domain='<active website domain>', field='username' or 'email'). It reuses the domain-bound vault value, or asks the task owner privately and saves their reply encrypted for this domain. It returns only scoped placeholders, never plaintext. Use force_refresh only when the user asks to change the saved value or the website rejects it. Do not open the secure page for ordinary identifiers. Never use ask_user for a phone number, country code, OTP, verification code, password, API key, token, recovery code, or other secret.
@@ -79,12 +80,10 @@ def create_agent(
         if status_manager is not None:
             agent_controller.status_manager = status_manager
 
-    # Append security instructions
-    combined_system_message = SECURITY_INSTRUCTIONS
+    # Share Wilco's voice while retaining the browser's credential instructions.
+    combined_system_message = f"{SECURITY_INSTRUCTIONS}\n\n{PERSONALITY_INSTRUCTIONS}"
     combined_system_message += (
-        "\nUSER-FACING RESULTS: Write concise, conversational plain text in short "
-        "paragraphs of one or two sentences, separated by blank lines. Aim for at "
-        "most 320 characters per paragraph. Report the useful result without "
+        "\n\nUSER-FACING RESULTS: Report the useful result without "
         "narrating browser steps, internal reasoning, or implementation details."
     )
     if sensitive_data:

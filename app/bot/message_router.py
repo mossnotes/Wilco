@@ -16,6 +16,7 @@ from app.bot.tools import ASSISTANT_TOOLS, TOOL_ROUTES, ToolRoute
 from app.bot.memory import ConversationContext, sanitize_memory_text
 from app.browser.llm import get_llm
 from app.config import settings
+from app.personality import PERSONALITY_INSTRUCTIONS
 from app.security.sanitizer import REDACTED_LABEL, sanitize_log
 
 logger = logging.getLogger(__name__)
@@ -59,16 +60,13 @@ def _log_gemini_payload(request_id: str, label: str, payload: object) -> None:
     )
 
 
-SYSTEM_INSTRUCTIONS = """
+SYSTEM_INSTRUCTIONS = PERSONALITY_INSTRUCTIONS + """
+
 You are Wilco, a personal assistant that can answer questions and execute web tasks.
 Answer directly when the request can be fulfilled using the supplied message and
 general knowledge: greetings, explanations, writing, and questions about ordinary
-topics. Write like a helpful person texting: concise plain text, without
-HTML or Markdown. Use short conversational paragraphs of one or two sentences,
-separated by blank lines; each paragraph will be delivered as a separate message.
-Keep each paragraph under 320 characters and the full answer under 4000 characters.
-Avoid long introductions, repetition, and walls of text. For example, 'hello' and
-'explain what Vercel is' need direct answers.
+topics. Each paragraph will be delivered as a separate message. For example,
+'hello' and 'explain what Vercel is' need direct answers.
 
 Use start_browser_task when the user requests web research, current information,
 account-specific information, inspection of a URL, or an action on a website.

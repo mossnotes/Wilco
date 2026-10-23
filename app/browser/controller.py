@@ -3,6 +3,7 @@ import logging
 import math
 import re
 import time
+from functools import wraps
 from typing import Any, Literal, Optional, Union
 from urllib.parse import urlencode
 import uuid
@@ -30,7 +31,7 @@ COUNTDOWN_INTERVAL = 10
 
 
 class SecureController(Controller):
-    """Load scoped vault placeholders; browser-use performs all browser input."""
+    """Load scoped vault placeholders and guard native browser input."""
 
     def __init__(
         self,
@@ -50,7 +51,29 @@ class SecureController(Controller):
         self.sensitive_data = sensitive_data if sensitive_data is not None else {}
         self.task = task
         self.status_manager = status_manager
+        self._guard_native_input()
         self._register_secure_actions()
+
+    def _guard_native_input(self) -> None:
+        registered_input = self.registry.registry.actions.get("input")
+        if registered_input is None:
+            return
+        native_input = registered_input.function
+
+        @wraps(native_input)
+        async def guarded_input(*, params: Any, **context: Any) -> ActionResult:
+            # Registry.execute_action has already applied origin-scoped substitution.
+            # Upstream leaves unknown tags unchanged; never send those to the page.
+            if re.search(r"</?secret\b", params.text, re.IGNORECASE):
+                return ActionResult(error=(
+                    "Input blocked: unresolved or malformed secret placeholder. "
+                    "Call the appropriate credential tool (e.g. need_password) as a separate action, "
+                    "wait for its result, then input the exact returned <secret>name</secret>. "
+                    "Never put tool calls inside secret tags."
+                ))
+            return await native_input(params=params, **context)
+
+        registered_input.function = guarded_input
 
     async def act(self, action: Any, browser_session: BrowserSession, **kwargs: Any) -> ActionResult:
         # Upstream substitutes tags for every action. Only native input should receive
@@ -440,6 +463,8 @@ class SecureController(Controller):
             "Get the password for the active website domain. Use an existing vaulted password if present; "
             "otherwise pause the task and send the user a secure link with one password field. "
             "Returns only a <secret> placeholder for the standard input action, never plaintext. "
+            "Execute this action first, wait for its result, then input the exact returned placeholder. "
+            "Never put a tool call inside secret tags or input text. "
             "Call ask_user for a missing username/email or ask_phone_number for a missing phone number. "
             "Never request passwords in chat."
         )
@@ -450,6 +475,8 @@ class SecureController(Controller):
             "Get an API key for the active website domain. Use an existing vaulted API key if present; "
             "otherwise pause the task and send the user a secure link with one API key field. "
             "Returns only a scoped <secret> placeholder for the standard input action, never plaintext. "
+            "Execute this action first, wait for its result, then input the exact returned placeholder. "
+            "Never put a tool call inside secret tags or input text. "
             "Never ask for an API key in chat or use this for a password."
         )
         async def need_api_key(domain: str, browser_session: Optional[BrowserSession] = None) -> ActionResult:
