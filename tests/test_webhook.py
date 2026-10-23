@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
@@ -5,6 +6,7 @@ from httpx import AsyncClient
 from app.config import settings
 from app.bot.message_router import MessageDecision
 from app.bot.setup import set_bot
+from app.tasks.registry import task_registry
 
 
 @pytest.fixture(autouse=True)
@@ -149,6 +151,15 @@ async def test_webhook_handles_task_text_prompt(async_client: AsyncClient):
         assert response.json() == {"ok": True}
         # Internal progress stays hidden in normal operation.
         mock_bot.send_message.assert_not_called()
-        # Background browser task was spawned
-        mock_run_task.assert_called_once()
+        # The registered worker acknowledges the source message before browsing.
+        active = task_registry.get_by_chat(12345)
+        assert active is not None
+        await asyncio.wait_for(active[1], 1)
+        mock_run_task.assert_awaited_once()
+        reaction_calls = mock_bot.set_message_reaction.await_args_list
+        assert len(reaction_calls) == 2
+        assert reaction_calls[0].kwargs["chat_id"] == 12345
+        assert reaction_calls[0].kwargs["message_id"] == 2
+        assert reaction_calls[0].kwargs["reaction"][0].emoji == "👀"
+        assert reaction_calls[1].kwargs["reaction"] == []
 

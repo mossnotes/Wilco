@@ -4,6 +4,7 @@ import re
 from aiogram import F, Router
 from aiogram.types import Message
 
+from app.bot.acknowledgement import browser_task_acknowledgement
 from app.bot.message_router import route_message
 from app.bot.memory import conversation_memory, sanitize_memory_text
 from app.bot.serialization import incoming_messages
@@ -38,6 +39,13 @@ def _is_paused_control_request(text: str) -> bool:
         return False
     words = re.findall(r"[a-z]+(?:'[a-z]+)?", text.lower().replace("’", "'"))
     return len(words) > 1 and all(word in _PAUSED_CONTROL_WORDS for word in words)
+
+
+async def _run_acknowledged_browser_task(
+    task: TaskRecord, status_manager: StatusManager, message: Message,
+) -> None:
+    async with browser_task_acknowledgement(message):
+        await run_browser_task(task, status_manager, message.bot)
 
 
 @router.message(F.text)
@@ -239,6 +247,8 @@ async def _handle_text_message(message: Message) -> None:
     )
 
     # 5. Launch background execution with registry tracking
-    bg_task = asyncio.create_task(run_browser_task(task, status_manager, message.bot))
+    # The worker acknowledges only after registration, then clears its reaction
+    # on every exit path, including cancellation while awaiting user input.
+    bg_task = asyncio.create_task(_run_acknowledged_browser_task(task, status_manager, message))
     task_registry.register(chat_id, task, bg_task, status_manager)
     logger.info("Routing[%s] browser task registered task_id=%s", request_id, task.task_id)

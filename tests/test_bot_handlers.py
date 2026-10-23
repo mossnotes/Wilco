@@ -39,6 +39,7 @@ def make_mock_message(text: str, user_id: int = 123456, chat_id: int = 789012) -
     msg.answer = AsyncMock()
     msg.delete = AsyncMock()
     msg.bot = MagicMock()
+    msg.bot.set_message_reaction = AsyncMock(return_value=True)
     return msg
 
 
@@ -153,8 +154,8 @@ async def test_benign_prompt_starts_task(mock_message_router):
             mock_message_router.assert_awaited_once_with(
                 msg.text, request_id=f"telegram:{chat_id}:{msg.message_id}",
             )
-            mock_run.assert_called_once_with(task_rec, active_entry[2], msg.bot)
             await active_entry[1]
+            mock_run.assert_awaited_once_with(task_rec, active_entry[2], msg.bot)
 
 
 @pytest.mark.asyncio
@@ -173,6 +174,7 @@ async def test_direct_reply_does_not_create_browser_task(mock_message_router, br
         await handle_text_message(msg)
 
     msg.answer.assert_awaited_once_with(reply, parse_mode=None)
+    msg.bot.set_message_reaction.assert_not_awaited()
     mock_session.assert_not_called()
     mock_status.assert_not_called()
     mock_run.assert_not_called()
@@ -188,6 +190,7 @@ async def test_browser_route_rejects_an_existing_browser_task(mock_message_route
         await handle_text_message(msg)
 
     assert "A task is already running" in msg.answer.call_args.args[0]
+    msg.bot.set_message_reaction.assert_not_awaited()
     mock_message_router.assert_awaited_once()
     mock_run.assert_not_called()
 
