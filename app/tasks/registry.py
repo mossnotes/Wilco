@@ -106,6 +106,13 @@ class ActiveTaskRegistry:
     def get_credential_input(self, task_id: str) -> Optional[CredentialInputRequest]:
         return self._credential_inputs.get(task_id)
 
+    def credential_inputs_for(self, telegram_id: int, domain: str, credential_type: str) -> list[CredentialInputRequest]:
+        return [
+            pending for pending in self._credential_inputs.values()
+            if pending.task.user_id == telegram_id and pending.domain == domain
+            and pending.task.metadata.get("credential_type", "password") == credential_type
+        ]
+
     def clear_credential_input(self, task_id: str) -> None:
         self._credential_inputs.pop(task_id, None)
 

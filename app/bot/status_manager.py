@@ -1,7 +1,6 @@
 import asyncio
 import html
 import logging
-import math
 import time
 from typing import Optional
 
@@ -48,9 +47,6 @@ def format_status_message(task: TaskRecord) -> str:
     # Secrets must never be entered in chat, so we direct the user to the companion app.
     if task.state == TaskState.NEEDS_INPUT and not task.metadata.get("chat_input_field"):
         lines.append("👉 <i>Please open the Web Companion to provide the required input securely.</i>")
-        if deadline := task.metadata.get("credential_input_deadline"):
-            remaining = max(0, math.ceil(deadline - time.time()))
-            lines.append(f"⏳ <b>Time remaining:</b> {remaining}s")
 
     # 5. If an error occurred, show the failure explanation.
     if task.state == TaskState.FAILED and task.error:
@@ -69,7 +65,7 @@ def credential_input_keyboard(task: TaskRecord) -> Optional[InlineKeyboardMarkup
     domain = task.metadata.get("target_domain")
     if not url or not domain:
         return None
-    label = f"🔐 Provide {domain} Credentials"
+    label = f"Manage {domain} credentials"
     # Telegram requires HTTPS for WebApp buttons; keep the local development fallback.
     button = (
         InlineKeyboardButton(text=label, web_app=WebAppInfo(url=url))
@@ -154,6 +150,12 @@ class StatusManager:
         if not self.debug_status:
             await self._notify_user(task)
             return
+        if task.state == TaskState.NEEDS_INPUT and not task.metadata.get("chat_input_field"):
+            # Debug cards are edited in place; keep a separate permanent editor entry.
+            await self._notify_user(task)
+        else:
+            self._input_message_id = None
+            self._input_url = None
         if task.message_id is None:
             logger.warning(f"Cannot update status for task {task.task_id}: message_id is not set.")
             return
@@ -202,9 +204,14 @@ class StatusManager:
                 if url != self._input_url:
                     domain = task.metadata["target_domain"]
                     credential = task.metadata.get("credential_type", "credentials").replace("_", " ")
+                    text = (
+                        f"That password didn't work for {domain}. Update it here."
+                        if task.metadata.get("credential_rejected") else
+                        f"I need your {credential} for {domain}. Save it to your vault here."
+                    )
                     message = await self.bot.send_message(
                         chat_id=task.chat_id,
-                        text=f"I need your {credential} for {domain}. Open the Companion App to provide it securely.",
+                        text=text,
                         parse_mode=None, reply_markup=markup,
                     )
                     self._input_message_id = message.message_id
@@ -212,12 +219,7 @@ class StatusManager:
                 return
 
             if self._input_message_id is not None:
-                try:
-                    await self.bot.edit_message_reply_markup(
-                        chat_id=task.chat_id, message_id=self._input_message_id, reply_markup=None,
-                    )
-                except Exception:
-                    logger.warning("Could not clear credential button for task %s", task.task_id)
+                # This message is a permanent entry point to the site's vault editor.
                 self._input_message_id = None
                 self._input_url = None
 

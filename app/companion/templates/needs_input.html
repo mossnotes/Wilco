@@ -5,8 +5,7 @@
     <div class="page-heading"><h1>{{ ui.input_needed }}</h1></div>
     <form id="resolve-form" class="form-stack" novalidate
           data-task-id="{{ task.task_id }}"
-          data-target-domain="{{ target_domain | default('', true) }}"
-          data-deadline="{{ task.metadata.get('credential_input_deadline') or '' }}">
+          data-target-domain="{{ target_domain | default('', true) }}">
         {% if target_domain %}
         <p class="request-domain">{{ target_domain }}</p>
         <div class="field">
@@ -21,7 +20,6 @@
             <label for="totp_seed">{{ ui.authenticator_key_optional }}</label>
             <input id="totp_seed" name="totp_seed" type="password" autocomplete="off" spellcheck="false" maxlength="1024">
         </div>
-        <p id="input-countdown" class="countdown" role="timer" hidden></p>
         {% else %}
         <div class="field">
             <label for="user_input">{{ ui.response }}</label>
@@ -31,7 +29,7 @@
         <p id="resolve-error" class="feedback" role="alert" hidden></p>
         <div class="actions">
             <button class="button button-secondary" id="cancel-task" type="button">{{ ui.cancel_task }}</button>
-            <button class="button" type="submit" id="submit-btn">{{ ui.resume }}</button>
+            <button class="button" type="submit" id="submit-btn">{{ ui.save_to_vault if target_domain else ui.resume }}</button>
         </div>
     </form>
 </section>

@@ -1,9 +1,11 @@
-from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
 import json
 import logging
 import time
 from typing import Optional
 import uuid
+from urllib.parse import parse_qsl
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +19,38 @@ from app.security.vault import decrypt_secret, encrypt_secret
 logger = logging.getLogger(__name__)
 
 SESSION_COOKIE_NAME = "wilco_session"
+TELEGRAM_AUTH_MAX_AGE_SECONDS = 300
+
+
+def validate_telegram_identity(init_data: str) -> int:
+    """Verify Telegram Mini App initData before trusting its user ID.
+
+    https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
+    """
+    try:
+        if not settings.is_bot_configured:
+            raise ValueError
+        pairs = parse_qsl(init_data, keep_blank_values=True, strict_parsing=True, max_num_fields=32)
+        data = dict(pairs)
+        if len(data) != len(pairs):
+            raise ValueError
+        received_hash = data.pop("hash")
+        check_string = "\n".join(f"{key}={value}" for key, value in sorted(data.items()))
+        secret_key = hmac.digest(b"WebAppData", settings.TELEGRAM_BOT_TOKEN.encode(), "sha256")
+        expected_hash = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected_hash, received_hash):
+            raise ValueError
+        age = time.time() - int(data["auth_date"])
+        if age < -30 or age > TELEGRAM_AUTH_MAX_AGE_SECONDS:
+            raise ValueError
+        user = json.loads(data["user"])
+        telegram_id = user["id"]
+        if type(telegram_id) is not int or not 0 < telegram_id < 2**52 or user.get("is_bot"):
+            raise ValueError
+        return telegram_id
+    except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
+        # Never include signed payloads, bot tokens, or parse errors in responses/logs.
+        raise HTTPException(status_code=401, detail="Reopen the Companion App from Telegram.") from None
 
 
 def create_session_token(
@@ -69,13 +103,10 @@ async def get_current_user_optional(
     Extracts authenticated user from session cookie or Authorization header.
     Returns None if unauthenticated.
     """
-    token = request.cookies.get(SESSION_COOKIE_NAME)
-
-    if not token:
-        # Check Bearer authorization header
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header[7:].strip()
+    # A freshly verified Mini App identity takes priority over an older shared
+    # WebView cookie (e.g. after switching Telegram accounts).
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else request.cookies.get(SESSION_COOKIE_NAME)
 
     if not token:
         return None

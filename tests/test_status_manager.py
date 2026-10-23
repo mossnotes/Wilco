@@ -160,7 +160,7 @@ async def test_status_manager_handles_message_not_modified():
 
 
 @pytest.mark.parametrize("base_url, is_webapp", [("https://wilco.example", True), ("http://localhost:8000", False)])
-async def test_credential_button_and_countdown_flush_immediately_and_clear_on_resume(base_url, is_webapp):
+async def test_debug_credential_button_flushes_immediately_without_countdown(base_url, is_webapp):
     bot = AsyncMock()
     manager = StatusManager(bot, min_interval=60)
     task = TaskRecord(user_id=1, chat_id=1, prompt="Login <example>", message_id=42)
@@ -173,7 +173,7 @@ async def test_credential_button_and_countdown_flush_immediately_and_clear_on_re
     await manager.update(task)
     assert bot.edit_message_text.await_count == 2
     call = bot.edit_message_text.call_args.kwargs
-    assert "Time remaining:" in call["text"]
+    assert "Time remaining:" not in call["text"]
     assert "&lt;example&gt;" in call["text"]
     button = call["reply_markup"].inline_keyboard[0][0]
     assert "example.com" in button.text

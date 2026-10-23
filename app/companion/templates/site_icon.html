@@ -1,0 +1,9 @@
+{% macro site_icon(domain) -%}
+<span class="site-icon" aria-hidden="true">
+    <span class="site-monogram">{{ domain[0] | upper }}</span>
+    {% if '.' in domain and ':' not in domain and not domain.replace('.', '').isdigit() %}
+    <img data-site-icon src="https://{{ domain }}/favicon.ico" width="24" height="24"
+         alt="" referrerpolicy="no-referrer" loading="eager" decoding="async" hidden>
+    {% endif %}
+</span>
+{%- endmacro %}

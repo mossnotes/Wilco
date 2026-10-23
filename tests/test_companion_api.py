@@ -42,6 +42,7 @@ def assert_approved_page_text(html, domains=()):
     parser = PageText()
     parser.feed(html)
     approved = set(templates.env.globals["ui"].values()) | set(domains)
+    approved |= {domain[0].upper() for domain in domains}
     assert set(parser.text) <= approved
 
 
@@ -53,10 +54,10 @@ async def setup_test_database():
 
 @pytest.mark.asyncio
 async def test_unauthorized_access(async_client: AsyncClient):
-    # Dashboard without session cookie returns 401 HTML
+    # The public dashboard shell can authenticate with Telegram on the client.
     resp = await async_client.get("/companion/accounts")
-    assert resp.status_code == 401
-    assert "<h1>Sign in</h1>" in resp.text
+    assert resp.status_code == 200
+    assert "<h1>Accounts</h1>" in resp.text
     assert_approved_page_text(resp.text)
 
     # REST vault API without auth returns 401 JSON

@@ -1,6 +1,5 @@
 """Main-assistant tool catalog and authenticated, application-owned actions."""
 
-import logging
 from dataclasses import dataclass
 from typing import Literal
 
@@ -8,12 +7,9 @@ from aiogram.enums import ChatType
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 
 from app.config import settings
-from app.db.engine import async_session_factory
-from app.db.repository import IdentityTokenRepository, UserRepository
 from app.tasks.registry import task_registry
 from app.tasks.state import TaskState
 
-logger = logging.getLogger(__name__)
 ToolRoute = Literal["browser", "companion", "help", "cancel"]
 
 
@@ -40,7 +36,7 @@ ASSISTANT_TOOLS = (
     AssistantTool("open_companion", "companion", (
         "Open Wilco's secure Companion App for the requesting user. Use when they "
         "ask to get set up, link their Telegram account, open the Companion, or "
-        "add/manage saved credentials. Sends a real, short-lived pairing button "
+        "add/manage saved credentials. Sends a persistent Companion button with Telegram sign-in "
         "directly in their private chat, or reopens their pending credential request. "
         "Never use just for a greeting, to log into an external website, or to ask "
         "for a one-time code. Never collect passwords, API keys, or authenticator "
@@ -74,7 +70,7 @@ TOOL_ROUTES = {tool.name: tool.route for tool in ASSISTANT_TOOLS}
 
 
 async def open_companion(message: Message) -> str:
-    """Deliver a pairing link only to its authenticated owner's private chat."""
+    """Deliver a stable Mini App address in the requester's private chat."""
     user_id = message.from_user.id if message.from_user else None
     if not user_id or message.chat.type != ChatType.PRIVATE or message.chat.id != user_id:
         await message.answer("Message me privately to open your secure Companion App.", parse_mode=None)
@@ -87,25 +83,14 @@ async def open_companion(message: Message) -> str:
         if task and task.user_id == user_id and task.state == TaskState.NEEDS_INPUT else None
     )
     if not url:
-        try:
-            async with async_session_factory() as session:
-                await UserRepository.get_or_create_by_telegram_id(session, user_id)
-                token = await IdentityTokenRepository.create_token(
-                    session, user_id, ttl_minutes=settings.COMPANION_TOKEN_TTL_MINUTES,
-                )
-                await session.commit()
-            url = f"{settings.COMPANION_BASE_URL.rstrip('/')}/link?token={token.token}"
-        except Exception as exc:
-            logger.warning("Companion pairing failed for user %s (%s)", user_id, type(exc).__name__)
-            await message.answer("I couldn't create your Companion link. Please try again.", parse_mode=None)
-            return "Companion link creation failed; no link was issued."
+        url = f"{settings.COMPANION_BASE_URL.rstrip('/')}/accounts"
 
     button = (
         InlineKeyboardButton(text="Open Wilco Companion App", web_app=WebAppInfo(url=url))
         if url.startswith("https://") else InlineKeyboardButton(text="Open Wilco Companion App", url=url)
     )
     await message.answer(
-        "Here's your secure Companion link. Use it to link your account or manage your saved credentials.",
+        "Here's your Companion App. Manage your saved credentials here anytime.",
         parse_mode=None, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]]),
     )
     return "A secure Companion access button was delivered privately to the requesting user."

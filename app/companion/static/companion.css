@@ -45,6 +45,19 @@ svg { display: block; flex-shrink: 0; }
 .account-row:first-child { border-top: 1px solid #ededed; }
 .domain, .request-domain, .dialog-domain { overflow-wrap: anywhere; }
 .domain { min-width: 0; }
+.auth-pending main { visibility: hidden; }
+.auth-status { color: #606060; font-size: 15px; }
+.account-identity { display: flex; align-items: center; gap: 14px; min-width: 0; flex: 1; padding-block: 14px; }
+.account-identity .domain { display: block; }
+.credential-kind, .field-hint, .site-domain { color: #737373; font-size: 13px; }
+.credential-kind { display: block; margin-top: 2px; }
+.site-heading { display: flex; align-items: center; gap: 16px; margin-bottom: 36px; }
+.site-heading-text { min-width: 0; }
+.site-domain { overflow-wrap: anywhere; margin-bottom: 4px; }
+.site-icon { display: grid; place-items: center; flex-shrink: 0; width: 42px; height: 42px; border: 1px solid #ededed; border-radius: 11px; background: #fafafa; }
+.site-icon img { object-fit: contain; }
+.site-monogram { font-size: 18px; color: #737373; }
+.save-status { font-size: 14px; color: #426647; }
 
 .button {
     display: inline-flex;
@@ -83,9 +96,8 @@ input:focus, select:focus, textarea:focus { border-color: #202020; }
 [aria-invalid="true"] { border-color: #202020; }
 .actions { display: flex; gap: 12px; margin-top: 8px; }
 .actions .button { flex: 1; }
-.feedback, .countdown { font-size: 14px; }
+.feedback { font-size: 14px; }
 .feedback { border-left: 2px solid #202020; padding-left: 12px; }
-.countdown { color: #606060; font-variant-numeric: tabular-nums; }
 .request-domain { margin-top: -12px; padding-bottom: 20px; border-bottom: 1px solid #ededed; }
 .dialog-domain { margin: -12px 0 28px; color: #606060; }
 

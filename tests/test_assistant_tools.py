@@ -36,20 +36,22 @@ def test_all_main_tools_have_closed_argument_schemas_and_descriptions():
 ])
 async def test_pairing_tool_never_issues_links_outside_owners_private_chat(user_id, chat_id, chat_type):
     msg = message(user_id=user_id, chat_id=chat_id, chat_type=chat_type)
-    with patch("app.bot.tools.async_session_factory") as database:
+    with patch("app.db.repository.IdentityTokenRepository.create_token") as database:
         await execute_assistant_tool("companion", msg)
     database.assert_not_called()
     assert "privately" in msg.answer.call_args.args[0]
     assert "reply_markup" not in msg.answer.call_args.kwargs
 
 
-async def test_pairing_failure_has_no_fabricated_link_or_error_details(caplog):
+async def test_companion_link_is_stable_and_never_mints_pairing_tokens(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "COMPANION_BASE_URL", "https://wilco.example/companion")
     msg = message()
-    with patch("app.bot.tools.async_session_factory", side_effect=RuntimeError("private-error-canary")):
+    with patch("app.db.repository.IdentityTokenRepository.create_token") as database:
         await execute_assistant_tool("companion", msg)
-    assert "couldn't create" in msg.answer.call_args.args[0]
-    assert "reply_markup" not in msg.answer.call_args.kwargs
-    assert "private-error-canary" not in caplog.text
+    database.assert_not_called()
+    button = msg.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.web_app.url == "https://wilco.example/companion/accounts"
 
 
 async def test_companion_reopens_own_pending_link_without_minting_another(monkeypatch):
@@ -57,7 +59,7 @@ async def test_companion_reopens_own_pending_link_without_minting_another(monkey
     task = TaskRecord(user_id=123, chat_id=123, prompt="Login", state=TaskState.NEEDS_INPUT)
     task.metadata["companion_url"] = "https://wilco.example/companion/link?token=existing"
     monkeypatch.setattr("app.bot.tools.task_registry.get_by_chat", lambda chat_id: (task, None, None))
-    with patch("app.bot.tools.async_session_factory") as database:
+    with patch("app.db.repository.IdentityTokenRepository.create_token") as database:
         await execute_assistant_tool("companion", msg)
     database.assert_not_called()
     assert msg.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][0].web_app.url == task.metadata["companion_url"]
@@ -66,7 +68,7 @@ async def test_companion_reopens_own_pending_link_without_minting_another(monkey
 async def test_help_tool_is_read_only_and_uses_natural_language():
     msg = message("How do I use Wilco?")
     with (
-        patch("app.bot.tools.async_session_factory") as database,
+        patch("app.db.repository.IdentityTokenRepository.create_token") as database,
         patch("app.bot.tools.task_registry.cancel_task_by_chat", new_callable=AsyncMock) as cancel,
     ):
         await execute_assistant_tool("help", msg)

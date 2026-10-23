@@ -128,7 +128,7 @@ async def test_request_for_specific_type_is_not_satisfied_by_another(kind, exist
     wait = AsyncMock(return_value="test stopped before submission")
     monkeypatch.setattr(controller, "_wait_for_credentials", wait)
     result = await action(controller, f"need_{kind}")(domain="example.com", browser_session=browser)
-    wait.assert_awaited_once_with("example.com", kind)
+    wait.assert_awaited_once_with("example.com", kind, rejected=False)
     assert result.error == "test stopped before submission"
 
 

@@ -16,6 +16,7 @@ from app.companion.auth import (
     create_session_token,
     get_current_user,
     get_current_user_optional,
+    validate_telegram_identity,
 )
 from app.config import settings
 from app.db.engine import get_db
@@ -49,6 +50,12 @@ templates.env.globals["ui"] = {
     "api_key": "API key",
     "username_or_email": "Username or email",
     "save": "Save",
+    "save_to_vault": "Save to vault",
+    "saved": "Saved. Wilco will use this next time.",
+    "saved_continuing": "Saved. Wilco is continuing.",
+    "replace_secret": "You can update this anytime.",
+    "auth_failed": "Reopen the Companion App from Telegram to sign in.",
+    "connecting": "Connecting…",
     "cancel": "Cancel",
     "close": "Close",
     "remove_account": "Remove account?",
@@ -59,12 +66,11 @@ templates.env.globals["ui"] = {
     "resume": "Resume",
     "cancel_task": "Cancel task",
     "cancel_task_question": "Cancel task?",
-    "time_remaining": "Time remaining",
     "expired": "Expired",
     "connected": "Connected",
     "continue": "Continue",
     "sign_in": "Sign in",
-    "sign_in_instruction": "Open Telegram and send /login.",
+    "sign_in_instruction": "Open the Companion App from your private chat with Wilco.",
     "save_failed": "Save failed",
     "remove_failed": "Remove failed",
     "submit_failed": "Submit failed",
@@ -85,7 +91,11 @@ class CreateCredentialRequest(BaseModel):
     site_domain: str = Field(..., min_length=1)
     auth_type: Literal["password", "totp_seed", "api_key"] = "password"
     username_or_identifier: Optional[str] = None
-    secret: str = Field(..., min_length=1)
+    secret: str = Field(..., min_length=1, max_length=16384, repr=False)
+
+
+class TelegramIdentityRequest(BaseModel):
+    init_data: str = Field(..., min_length=1, max_length=16384, repr=False)
 
 
 class ResolveInputRequest(BaseModel):
@@ -101,6 +111,46 @@ class ResolveInputRequest(BaseModel):
 # ---------------------------------------------------------
 # Web Companion HTML Routes
 # ---------------------------------------------------------
+
+@companion_router.post("/auth/telegram")
+async def authenticate_telegram(
+    req: TelegramIdentityRequest,
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_db),
+):
+    telegram_id = validate_telegram_identity(req.init_data)
+    user, _ = await UserRepository.get_or_create_by_telegram_id(session, telegram_id)
+    await session.commit()
+    session_token = create_session_token(user.id, user.telegram_id)
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME, value=session_token,
+        httponly=True, samesite="strict", max_age=7 * 86400, secure=request.url.scheme == "https",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    # The JS closure can use a bearer session in Telegram Web, where third-party
+    # cookies may be blocked. Never put this token in a URL or browser storage.
+    return {"user_id": str(user.id), "session_token": session_token}
+
+
+@companion_router.get("/credentials", response_class=HTMLResponse)
+async def credential_editor(
+    request: Request,
+    domain: str = Query(...),
+    credential_type: Literal["password", "api_key", "totp_seed"] = "password",
+    user: Optional[User] = Depends(get_current_user_optional),
+):
+    target = clean_domain(domain)
+    if not target:
+        raise HTTPException(status_code=400, detail="Invalid site domain")
+    # Public shell only. Every vault read/write still requires authenticated ownership.
+    response = templates.TemplateResponse(
+        request=request, name="credential_editor.html",
+        context={"target_domain": target, "credential_type": credential_type, "user": user},
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
 @companion_router.get("/link", response_class=HTMLResponse)
 async def link_identity(
@@ -143,7 +193,7 @@ async def link_identity(
         resp = templates.TemplateResponse(
             request=request,
             name="link.html",
-            context={},
+            context={"user": user},
         )
     resp.set_cookie(
         key=SESSION_COOKIE_NAME,
@@ -166,23 +216,15 @@ async def list_connected_accounts_page(
     user: Optional[User] = Depends(get_current_user_optional),
 ):
     """Renders the Connected Accounts dashboard for the authenticated user."""
-    if not user:
-        return templates.TemplateResponse(
-            request=request,
-            name="unauthorized.html",
-            context={},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-        )
-
-    creds = await CredentialRepository.get_credentials_for_user(session, user.id)
+    creds = await CredentialRepository.get_credentials_for_user(session, user.id) if user else []
 
     # The dashboard needs domains and internal row IDs, never decrypted secrets.
-    view_credentials = [{"id": str(c.id), "site_domain": c.site_domain} for c in creds]
+    view_credentials = [{"id": str(c.id), "site_domain": c.site_domain, "auth_type": c.auth_type} for c in creds]
 
     response = templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        context={"credentials": view_credentials},
+        context={"credentials": view_credentials, "user": user},
     )
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -238,7 +280,7 @@ async def task_needs_input_page(
         name={"password": "need_password.html", "api_key": "need_api_key.html"}.get(
             task.metadata.get("credential_type"), "needs_input.html"
         ),
-        context={"task": task, "target_domain": target_domain},
+        context={"task": task, "target_domain": target_domain, "user": user},
     )
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -275,18 +317,21 @@ async def store_credential(
         logger.error(f"Failed to encrypt credential: {e}")
         raise HTTPException(status_code=500, detail="Failed to securely encrypt credential") from e
 
+    identifier = req.username_or_identifier
+    if "username_or_identifier" not in req.model_fields_set:
+        existing = await CredentialRepository.get_credentials_for_domain(session, user.id, domain)
+        identifier = next((c.username_or_identifier for c in existing if c.auth_type == req.auth_type), None)
     cred = await CredentialRepository.add_or_update_credential(
         session,
         user_id=user.id,
         site_domain=domain,
         auth_type=req.auth_type,
         encrypted_blob=encrypted_blob,
-        username_or_identifier=req.username_or_identifier,
+        username_or_identifier=identifier,
     )
 
     masked = mask_secret(secret_to_store, is_api_key=(req.auth_type == "api_key"))
-
-    return {
+    result = {
         "status": "success",
         "id": str(cred.id),
         "site_domain": cred.site_domain,
@@ -294,6 +339,41 @@ async def store_credential(
         "username_or_identifier": cred.username_or_identifier,
         "masked_secret": masked,
     }
+    # A save must succeed even if the task has ended. Commit before waking any browser.
+    await session.commit()
+    result["resumed"] = await _resume_waiting_credentials(session, user, domain, req.auth_type)
+    return result
+
+
+async def _resume_waiting_credentials(session: AsyncSession, user: User, domain: str, credential_type: str) -> bool:
+    resumed = False
+    for pending in task_registry.credential_inputs_for(user.telegram_id, domain, credential_type):
+        async with pending.lock:
+            if not pending.is_pending:
+                continue
+            record = pending.task.model_copy(deep=True)
+            record.transition_to(TaskState.RUNNING, status_message="Secure credentials saved. Continuing task.")
+            for key in ("target_domain", "credential_type", "credential_rejected", "credential_input_deadline", "companion_url"):
+                record.metadata.pop(key, None)
+            try:
+                await TaskRepository.save_task(session, record)
+                if not pending.is_pending:
+                    await session.rollback()
+                    continue
+                await session.commit()
+                if not pending.is_pending:
+                    # Timeout/cancellation can occur during commit. Never revive a stopped task.
+                    await TaskRepository.save_task(session, pending.task)
+                    await session.commit()
+                    continue
+                pending.task.metadata = record.metadata
+                pending.task.transition_to(TaskState.RUNNING, status_message=record.status_message)
+                pending.event.set()
+                resumed = True
+            except Exception:
+                await session.rollback()
+                logger.warning("Credential saved, but waiting task could not continue (%s)", pending.task.task_id)
+    return resumed
 
 
 @vault_api_router.get("/credentials")

@@ -13,7 +13,7 @@ import pytest_asyncio
 from app.browser.controller import SecureController, clean_domain, validate_origin
 from app.config import settings
 from app.db.engine import async_session_factory, init_db
-from app.db.repository import CredentialRepository, IdentityTokenRepository, TaskRepository, UserRepository
+from app.db.repository import CredentialRepository, TaskRepository, UserRepository
 from app.security.vault import decrypt_secret, encrypt_secret
 from app.tasks.registry import task_registry
 from app.tasks.state import TaskRecord, TaskState
@@ -160,7 +160,7 @@ async def test_decryption_failure_does_not_publish_or_log_secret(caplog):
     assert "CORRUPT_SECRET_BLOB" not in caplog.text
 
 
-async def test_missing_credentials_webapp_roundtrip(async_client, monkeypatch):
+async def test_missing_credentials_webapp_roundtrip(async_client, monkeypatch, telegram_identity):
     monkeypatch.setattr(settings, "COMPANION_BASE_URL", "https://wilco.example/companion")
     user = await vault_user()
     task = TaskRecord(user_id=user.telegram_id, chat_id=user.telegram_id, prompt="Login to vercel.com")
@@ -188,10 +188,13 @@ async def test_missing_credentials_webapp_roundtrip(async_client, monkeypatch):
         assert 'id="username"' not in response.text
         assert 'id="totp_seed"' not in response.text
         assert "vercel.com" in response.text
-        response = await async_client.post(f"/api/tasks/{task.task_id}/resolve-input", json={
-            "credential_type": "password", "secret": "  exact password  ",
+        auth = await async_client.post("/companion/auth/telegram", json={"init_data": telegram_identity(user.telegram_id)})
+        assert auth.status_code == 200
+        response = await async_client.post("/api/vault/credentials", json={
+            "site_domain": "vercel.com", "auth_type": "password", "secret": "  exact password  ",
         })
-        assert response.status_code == 200
+        assert response.status_code == 201
+        assert response.json()["resumed"] is True
         result = await asyncio.wait_for(action_task, 5)
         assert result.error is None
         assert shared["https://*.vercel.com"]["vercel_pass"] == "  exact password  "
@@ -208,9 +211,9 @@ async def test_missing_credentials_webapp_roundtrip(async_client, monkeypatch):
             saved = await TaskRepository.get_task(db, task.task_id)
             assert saved.state == TaskState.RUNNING
             assert "exact password" not in saved.model_dump_json()
-        token = parse_qs(link.query)["token"][0]
-        async with async_session_factory() as db:
-            assert await IdentityTokenRepository.validate_and_consume_token(db, token) is None
+        assert "token" not in parse_qs(link.query)
+        reopened = await async_client.get(f"{link.path}?{link.query}")
+        assert reopened.status_code == 200
     finally:
         if not action_task.done():
             action_task.cancel()

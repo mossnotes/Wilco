@@ -1,8 +1,32 @@
 import pytest
+import hashlib
+import hmac
+import json
+import time
+from urllib.parse import urlencode
 from typing import AsyncGenerator
 from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.config import settings
+
+
+@pytest.fixture
+def telegram_identity(monkeypatch):
+    """Sign synthetic Telegram payloads using a test-only bot token."""
+    token = "123456:synthetic-test-bot-token"
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", token)
+
+    def sign(telegram_id=123456, *, auth_date=None, **extra):
+        values = {
+            "auth_date": str(int(time.time()) if auth_date is None else auth_date),
+            "user": json.dumps({"id": telegram_id, "first_name": "Test"}, separators=(",", ":")),
+            **extra,
+        }
+        secret = hmac.digest(b"WebAppData", token.encode(), hashlib.sha256)
+        check = "\n".join(f"{key}={value}" for key, value in sorted(values.items()))
+        values["hash"] = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+        return urlencode(values)
+    return sign
 
 
 @pytest.fixture(autouse=True)

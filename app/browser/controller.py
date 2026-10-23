@@ -1,11 +1,9 @@
 import asyncio
 import logging
-import math
 import re
 import time
 from functools import wraps
 from typing import Any, Literal, Optional, Union
-from urllib.parse import urlencode
 import uuid
 
 from browser_use import ActionResult, Controller
@@ -16,18 +14,18 @@ from aiogram.exceptions import TelegramForbiddenError
 from app.browser.credentials_resolver import SensitiveData, credential_scope, get_domain_slug, unpack_credentials
 from app.config import settings
 from app.db.engine import async_session_factory
-from app.db.repository import CredentialRepository, IdentityTokenRepository, TaskRepository, UserRepository
+from app.db.repository import CredentialRepository, TaskRepository, UserRepository
 from app.security.origins import clean_domain, validate_origin
 from app.security.account_details import account_placeholders, normalize_account_detail
 from app.security.vault import decrypt_secret, encrypt_secret
 from app.tasks.chat_input import ChatInputField, OTPChannel, account_input_prompt, otp_prompt
+from app.companion.links import credential_editor_url
 from app.tasks.registry import task_registry
 from app.tasks.state import TaskRecord, TaskState
 
 logger = logging.getLogger(__name__)
 
 CREDENTIAL_INPUT_TIMEOUT = 150
-COUNTDOWN_INTERVAL = 10
 
 
 class SecureController(Controller):
@@ -126,7 +124,7 @@ class SecureController(Controller):
             except Exception:
                 logger.warning("Could not update credential status for task %s", self.task.task_id)
 
-    async def _wait_for_credentials(self, domain: str, credential_type: Optional[str] = None) -> Optional[str]:
+    async def _wait_for_credentials(self, domain: str, credential_type: Optional[str] = None, *, rejected: bool = False) -> Optional[str]:
         task = self.task
         if task is None or self.status_manager is None or self.telegram_id != task.user_id:
             return "Credentials are missing. Open the Wilco WebApp to add them, then retry."
@@ -134,17 +132,12 @@ class SecureController(Controller):
             return "Task is no longer running; credential request aborted."
 
         deadline = time.time() + CREDENTIAL_INPUT_TIMEOUT
-        async with async_session_factory() as db:
-            token = await IdentityTokenRepository.create_token(
-                db, task.user_id, ttl_minutes=max(1, math.ceil(CREDENTIAL_INPUT_TIMEOUT / 60))
-            )
-            await db.commit()
-        query = urlencode({"token": token.token, "task_id": task.task_id, "domain": domain})
-        companion_url = f"{settings.COMPANION_BASE_URL.rstrip('/')}/link?{query}"
+        companion_url = credential_editor_url(domain, credential_type or "password")
         task.metadata.update({
             "target_domain": domain,
             "credential_input_deadline": deadline,
             "companion_url": companion_url,
+            "credential_rejected": rejected,
         })
         if credential_type:
             task.metadata["credential_type"] = credential_type
@@ -153,19 +146,10 @@ class SecureController(Controller):
         pending = task_registry.register_credential_input(task, domain, deadline)
         try:
             await self._save_task()
-            # The wait cap includes sending Telegram updates and all countdown edits.
+            # The browser wait is bounded; the editor itself never expires with it.
             async with asyncio.timeout(max(0, deadline - time.time())):
                 await self._update_status()
-                while not pending.event.is_set():
-                    remaining = deadline - time.time()
-                    if remaining <= 0:
-                        raise TimeoutError
-                    try:
-                        await asyncio.wait_for(pending.event.wait(), timeout=min(COUNTDOWN_INTERVAL, remaining))
-                    except TimeoutError:
-                        if task.state != TaskState.NEEDS_INPUT:
-                            break
-                        await self._update_status()
+                await pending.event.wait()
             if task.state != TaskState.RUNNING:
                 return "Credential entry was cancelled; task stopped."
             return None
@@ -190,14 +174,10 @@ class SecureController(Controller):
             # Serialize cleanup with submissions so a late commit cannot overwrite FAILED.
             async with pending.lock:
                 task_registry.clear_credential_input(task.task_id)
-                for key in ("target_domain", "credential_type", "credential_input_deadline", "companion_url"):
+                for key in ("target_domain", "credential_type", "credential_rejected", "credential_input_deadline", "companion_url"):
                     task.metadata.pop(key, None)
-                # Invalidate the link even when it was never opened.
                 try:
                     async with async_session_factory() as db:
-                        stored_token = await IdentityTokenRepository.get_token(db, token.token)
-                        if stored_token:
-                            stored_token.is_used = True
                         await TaskRepository.save_task(db, task)
                         await db.commit()
                 except Exception:
@@ -394,6 +374,7 @@ class SecureController(Controller):
             domain: str,
             browser_session: Optional[BrowserSession] = None,
             credential_type: Optional[str] = None,
+            force_refresh: bool = False,
         ) -> ActionResult:
             if browser_session is None:
                 return ActionResult(error="No active browser session available.")
@@ -417,8 +398,26 @@ class SecureController(Controller):
                 credentials = await CredentialRepository.get_credentials_for_domain(db, user_id, target)
             if credential_type:
                 credentials = [c for c in credentials if c.auth_type == credential_type]
-            if not credentials:
-                error = await self._wait_for_credentials(target, credential_type or "password")
+            if force_refresh and credentials:
+                # The owner may already have corrected the vault through an older
+                # persistent button while this agent still held the rejected value.
+                scope = self.sensitive_data.get(credential_scope(target), {})
+                previous = scope.get(f"{get_domain_slug(target)}_pass") if isinstance(scope, dict) else None
+                if previous is not None:
+                    try:
+                        latest = unpack_credentials(target, credentials).get(f"{get_domain_slug(target)}_pass")
+                    except Exception:
+                        return ActionResult(error="Failed to decrypt credentials from the secure vault.")
+                    if latest is not None and latest != previous:
+                        force_refresh = False
+            if not credentials or force_refresh:
+                if force_refresh:
+                    # Do not keep an explicitly rejected password available for further inputs.
+                    scope = self.sensitive_data.get(credential_scope(target), {})
+                    if isinstance(scope, dict):
+                        for key in (f"{get_domain_slug(target)}_pass", "x_pass"):
+                            scope.pop(key, None)
+                error = await self._wait_for_credentials(target, credential_type or "password", rejected=force_refresh)
                 if error:
                     return ActionResult(error=error)
                 async with async_session_factory() as db:
@@ -467,9 +466,11 @@ class SecureController(Controller):
             "Never put a tool call inside secret tags or input text. "
             "Call ask_user for a missing username/email or ask_phone_number for a missing phone number. "
             "Never request passwords in chat."
+            " If the website explicitly rejects the password, call again with force_refresh=true to "
+            "ask the owner to replace it in the same editor. Wait for their save, then use the newly returned placeholder."
         )
-        async def need_password(domain: str, browser_session: Optional[BrowserSession] = None) -> ActionResult:
-            return await load_credentials(domain, browser_session, "password")
+        async def need_password(domain: str, force_refresh: bool = False, browser_session: Optional[BrowserSession] = None) -> ActionResult:
+            return await load_credentials(domain, browser_session, "password", force_refresh=force_refresh)
 
         @self.action(
             "Get an API key for the active website domain. Use an existing vaulted API key if present; "

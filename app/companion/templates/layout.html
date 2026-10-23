@@ -10,9 +10,10 @@
     <script id="telegram-sdk" src="https://telegram.org/js/telegram-web-app.js" async></script>
     <script src="{{ url_for('companion-static', path='companion.js') }}" defer></script>
 </head>
-<body>
+<body class="auth-pending" data-auth-user="{{ user.id if user is defined and user else '' }}">
     <div class="shell">
         <header class="app-header"><a class="wordmark" href="/companion/accounts">{{ ui.app_name }}</a></header>
+        <p id="auth-status" class="auth-status" role="status">{{ ui.connecting }}</p>
         <main>{% block content %}{% endblock %}</main>
     </div>
     <script id="ui-copy" type="application/json">{{ ui | tojson }}</script>
