@@ -189,6 +189,15 @@ class BrowserProfileRepository:
     """Manages persistent browser storage states (cookies/local storage)."""
 
     @staticmethod
+    async def get_profiles_for_user(session: AsyncSession, user_id: uuid.UUID) -> List[BrowserProfile]:
+        result = await session.execute(
+            select(BrowserProfile).where(BrowserProfile.user_id == user_id).order_by(
+                BrowserProfile.updated_at, BrowserProfile.site_domain,
+            )
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
     async def save_profile(
         session: AsyncSession,
         user_id: uuid.UUID,

@@ -1,17 +1,33 @@
-import json
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
+from urllib.parse import urlsplit
 import uuid
 
 from browser_use import Browser
 
 from app.config import settings
 from app.db.engine import async_session_factory
-from app.db.repository import BrowserProfileRepository
-from app.security.vault import decrypt_secret, encrypt_secret
+from app.db.repository import UserRepository
+from app.browser.profiles import load_session_profiles, save_session_profiles
 
 logger = logging.getLogger(__name__)
+
+SESSION_STORAGE_TIMEOUT_SECONDS = 10
+
+
+def _redact_storage_state_warning(record: logging.LogRecord) -> bool:
+    # Browser-use's profile validator interpolates the complete storage dict in
+    # this warning, including cookies and origin tokens. Windows temp paths can
+    # trigger it even for a newly isolated browser profile.
+    if "was passed both storage_state AND user_data_dir" in record.getMessage():
+        record.msg = "BrowserSession received both storage_state and user_data_dir; storage values redacted."
+        record.args = ()
+    return True
+
+
+logging.getLogger("browser_use.utils").addFilter(_redact_storage_state_warning)
 
 
 def get_browser_cdp_url() -> Optional[str]:
@@ -66,6 +82,29 @@ def create_browser(
     )
 
 
+async def _export_session_state(session: Browser, restored_state: Any) -> dict[str, Any]:
+    state = await session.export_storage_state()
+    # The public exporter currently returns cookies only. Use the origin reader
+    # used by browser-use's native storage watchdog for local/session storage.
+    observed = await session._cdp_get_origins()
+    origins = {
+        item["origin"]: item for item in (
+            restored_state.get("origins", []) if isinstance(restored_state, dict) else []
+        )
+    }
+    # The native reader reports storage in the focused page and its frames.
+    # Preserve restored origins that this task never opened, while allowing an
+    # empty active origin (e.g. after logout) to clear its previous storage.
+    try:
+        page = urlsplit(await session.get_current_page_url())
+        origins.pop(f"{page.scheme}://{page.netloc}", None)
+    except Exception:
+        pass
+    origins.update((item["origin"], item) for item in observed)
+    state["origins"] = list(origins.values())
+    return state
+
+
 @asynccontextmanager
 async def browser_session_context(
     browser: Optional[Browser] = None,
@@ -74,31 +113,37 @@ async def browser_session_context(
     user_id: Optional[uuid.UUID] = None,
     site_domain: Optional[str] = None,
     allowed_domains: Optional[List[str]] = None,
+    telegram_id: Optional[int] = None,
+    task_prompt: str = "",
 ) -> AsyncGenerator[Browser, None]:
     """
     Async context manager managing the lifecycle (start and stop) of a Browser session.
-    Automatically loads stored profile cookies/localStorage on start, and exports
-    updated session state to the database on completion.
+    Automatically restores the owner's requested sites and saves updated cookies
+    and origin storage before stopping, including after failure or cancellation.
     
     Session cookies in storage_state_json are encrypted using AES-256-GCM.
     """
     active_storage_state = storage_state
+    profile_owner = user_id
+    loaded_domains: set[str] = set()
 
-    # Auto-load saved profile if user_id and site_domain are provided
-    if active_storage_state is None and user_id and site_domain:
+    if telegram_id:
         try:
             async with async_session_factory() as db:
-                profile = await BrowserProfileRepository.get_profile(db, user_id, site_domain)
-                if profile and profile.storage_state_json:
-                    raw_str = profile.storage_state_json
-                    try:
-                        decrypted_str = decrypt_secret(raw_str, settings.vault_key_bytes)
-                        active_storage_state = json.loads(decrypted_str)
-                    except Exception:
-                        active_storage_state = json.loads(raw_str)
-                    logger.info("Restoring persistent session profile for %s (user %s)", site_domain, user_id)
-        except Exception as exc:
-            logger.warning("Failed to restore browser profile for %s: %s", site_domain, exc)
+                user, _ = await UserRepository.get_or_create_by_telegram_id(db, telegram_id)
+                if profile_owner is not None and profile_owner != user.id:
+                    raise ValueError("Browser profile owner does not match the task owner")
+                profile_owner = user.id
+                await db.commit()
+        except Exception:
+            profile_owner = None
+            logger.warning("Could not resolve browser profile owner for Telegram user %s", telegram_id)
+
+    if active_storage_state is None and profile_owner:
+        try:
+            active_storage_state, loaded_domains = await load_session_profiles(profile_owner, task_prompt, site_domain)
+        except Exception:
+            logger.warning("Could not load browser profiles for user %s", profile_owner)
 
     session = browser or create_browser(
         headless=headless,
@@ -106,31 +151,23 @@ async def browser_session_context(
         allowed_domains=allowed_domains,
     )
     logger.info("Starting browser session...")
-    await session.start()
+    started = False
     try:
+        await session.start()
+        started = True
         yield session
     finally:
-        # Auto-export updated profile cookies on shutdown (encrypted with AES-256-GCM)
-        if user_id and site_domain:
-            try:
-                exported = await session.export_storage_state()
-                if exported and (exported.get("cookies") or exported.get("origins")):
-                    raw_json = json.dumps(exported)
-                    encrypted_blob = encrypt_secret(raw_json, settings.vault_key_bytes)
-                    async with async_session_factory() as db:
-                        await BrowserProfileRepository.save_profile(
-                            db,
-                            user_id=user_id,
-                            site_domain=site_domain,
-                            storage_state_json=encrypted_blob,
-                        )
-                        await db.commit()
-                        logger.info("Saved updated encrypted session profile for %s", site_domain)
-            except Exception as exc:
-                logger.debug("Failed to auto-export browser profile for %s: %s", site_domain, exc)
-
-        logger.info("Stopping browser session...")
         try:
-            await session.stop()
-        except Exception as e:
-            logger.warning("Error occurred while stopping browser session: %s", e)
+            if profile_owner and started:
+                try:
+                    async with asyncio.timeout(SESSION_STORAGE_TIMEOUT_SECONDS):
+                        exported = await _export_session_state(session, active_storage_state)
+                        await save_session_profiles(profile_owner, exported, loaded_domains)
+                except Exception:
+                    logger.warning("Could not save browser profiles for user %s", profile_owner)
+        finally:
+            logger.info("Stopping browser session...")
+            try:
+                await session.stop()
+            except Exception:
+                logger.warning("Error occurred while stopping browser session")

@@ -96,7 +96,7 @@ async def test_encrypted_storage_state_roundtrip():
 
     site_domain = "vercel.com"
     dummy_cookie_data = {
-        "cookies": [{"name": "auth_token", "value": "SUPER_SECRET_SESSION_TOKEN_12345"}],
+        "cookies": [{"name": "auth_token", "value": "SUPER_SECRET_SESSION_TOKEN_12345", "domain": ".vercel.com", "path": "/"}],
         "origins": [],
     }
 
@@ -104,6 +104,7 @@ async def test_encrypted_storage_state_roundtrip():
     mock_browser.start = AsyncMock()
     mock_browser.stop = AsyncMock()
     mock_browser.export_storage_state = AsyncMock(return_value=dummy_cookie_data)
+    mock_browser._cdp_get_origins = AsyncMock(return_value=[])
 
     # Run browser session context to trigger save_profile in finally block
     async with browser_session_context(

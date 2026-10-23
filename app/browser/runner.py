@@ -82,7 +82,7 @@ async def run_browser_task(
 
         # Enforce wall-clock execution deadline
         async with asyncio.timeout(settings.TASK_TIMEOUT_SECONDS):
-            async with browser_session_context() as browser:
+            async with browser_session_context(telegram_id=task.user_id, task_prompt=task.prompt) as browser:
                 task.update_status("Browser launched. Initializing agent reasoning...")
                 await status_manager.update(task)
 

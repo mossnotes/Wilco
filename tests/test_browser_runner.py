@@ -86,7 +86,7 @@ async def test_run_browser_task_happy_path(sample_task, mock_bot, mock_status_ma
         assert "Task completed successfully" in sample_task.status_message
 
         mock_create_agent.assert_called_once()
-        mock_ctx_factory.assert_called_once_with()
+        mock_ctx_factory.assert_called_once_with(telegram_id=sample_task.user_id, task_prompt=sample_task.prompt)
         _, kwargs = mock_create_agent.call_args
         assert kwargs["task"] == sample_task.prompt
         assert kwargs["browser"] == mock_browser
