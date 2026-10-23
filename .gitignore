@@ -9,6 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
+# Local agent instructions and UI notes
+AGENTS.md
+/app/companion/ui_copy.json
+
 # docs
 docs/
 

@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 from pathlib import Path
 from typing import Dict, Literal, Optional
@@ -39,9 +38,38 @@ logger = logging.getLogger(__name__)
 # Template engine setup
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-templates.env.globals["ui"] = json.loads(
-    (Path(__file__).parent / "ui_copy.json").read_text(encoding="utf-8")
-)
+templates.env.globals["ui"] = {
+    "app_name": "Wilco",
+    "accounts": "Accounts",
+    "add_account": "Add account",
+    "website": "Website",
+    "type": "Type",
+    "password": "Password",
+    "authenticator_key": "Authenticator key",
+    "api_key": "API key",
+    "username_or_email": "Username or email",
+    "save": "Save",
+    "cancel": "Cancel",
+    "close": "Close",
+    "remove_account": "Remove account?",
+    "remove": "Remove",
+    "input_needed": "Input needed",
+    "response": "Response",
+    "authenticator_key_optional": "Authenticator key (optional)",
+    "resume": "Resume",
+    "cancel_task": "Cancel task",
+    "cancel_task_question": "Cancel task?",
+    "time_remaining": "Time remaining",
+    "expired": "Expired",
+    "connected": "Connected",
+    "continue": "Continue",
+    "sign_in": "Sign in",
+    "sign_in_instruction": "Open Telegram and send /login.",
+    "save_failed": "Save failed",
+    "remove_failed": "Remove failed",
+    "submit_failed": "Submit failed",
+    "cancel_failed": "Cancel failed",
+}
 
 # Routers
 companion_router = APIRouter(prefix="/companion", tags=["companion"])
