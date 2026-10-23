@@ -1,9 +1,12 @@
 import asyncio
+from datetime import datetime, timezone
+import hashlib
 import logging
 import re
 import time
 from functools import wraps
 from typing import Any, Literal, Optional, Union
+from urllib.parse import urlencode
 import uuid
 
 from browser_use import ActionResult, Controller
@@ -14,12 +17,11 @@ from aiogram.exceptions import TelegramForbiddenError
 from app.browser.credentials_resolver import SensitiveData, credential_scope, get_domain_slug, unpack_credentials
 from app.config import settings
 from app.db.engine import async_session_factory
-from app.db.repository import CredentialRepository, TaskRepository, UserRepository
+from app.db.repository import CredentialRepository, IdentityTokenRepository, TaskRepository, UserRepository
 from app.security.origins import clean_domain, validate_origin
 from app.security.account_details import account_placeholders, normalize_account_detail
 from app.security.vault import decrypt_secret, encrypt_secret
 from app.tasks.chat_input import ChatInputField, OTPChannel, account_input_prompt, otp_prompt
-from app.companion.links import credential_editor_url
 from app.tasks.registry import task_registry
 from app.tasks.state import TaskRecord, TaskState
 
@@ -132,12 +134,21 @@ class SecureController(Controller):
             return "Task is no longer running; credential request aborted."
 
         deadline = time.time() + CREDENTIAL_INPUT_TIMEOUT
-        companion_url = credential_editor_url(domain, credential_type or "password")
+        async with async_session_factory() as db:
+            token = await IdentityTokenRepository.create_token(db, task.user_id)
+            # Pairing tokens also exist for older account links. The reserved
+            # prefix prevents this narrower token from being exchanged there.
+            token.token = f"credential.{token.token}"
+            token.expires_at = datetime.fromtimestamp(deadline, timezone.utc)
+            await db.commit()
+        query = urlencode({"token": token.token, "task_id": task.task_id, "domain": domain})
+        companion_url = f"{settings.COMPANION_BASE_URL.rstrip('/')}/link?{query}"
         task.metadata.update({
             "target_domain": domain,
             "credential_input_deadline": deadline,
             "companion_url": companion_url,
             "credential_rejected": rejected,
+            "credential_token_digest": hashlib.sha256(token.token.encode()).hexdigest(),
         })
         if credential_type:
             task.metadata["credential_type"] = credential_type
@@ -146,7 +157,7 @@ class SecureController(Controller):
         pending = task_registry.register_credential_input(task, domain, deadline)
         try:
             await self._save_task()
-            # The browser wait is bounded; the editor itself never expires with it.
+            # The one-time link and its submission both share the browser's deadline.
             async with asyncio.timeout(max(0, deadline - time.time())):
                 await self._update_status()
                 await pending.event.wait()
@@ -174,10 +185,13 @@ class SecureController(Controller):
             # Serialize cleanup with submissions so a late commit cannot overwrite FAILED.
             async with pending.lock:
                 task_registry.clear_credential_input(task.task_id)
-                for key in ("target_domain", "credential_type", "credential_rejected", "credential_input_deadline", "companion_url"):
+                for key in ("target_domain", "credential_type", "credential_rejected", "credential_token_digest", "credential_input_deadline", "companion_url"):
                     task.metadata.pop(key, None)
                 try:
                     async with async_session_factory() as db:
+                        stored_token = await IdentityTokenRepository.get_token(db, token.token)
+                        if stored_token:
+                            stored_token.is_used = True
                         await TaskRepository.save_task(db, task)
                         await db.commit()
                 except Exception:
@@ -399,8 +413,8 @@ class SecureController(Controller):
             if credential_type:
                 credentials = [c for c in credentials if c.auth_type == credential_type]
             if force_refresh and credentials:
-                # The owner may already have corrected the vault through an older
-                # persistent button while this agent still held the rejected value.
+                # The owner may already have corrected the account details while
+                # this agent still held the rejected value.
                 scope = self.sensitive_data.get(credential_scope(target), {})
                 previous = scope.get(f"{get_domain_slug(target)}_pass") if isinstance(scope, dict) else None
                 if previous is not None:
@@ -467,7 +481,7 @@ class SecureController(Controller):
             "Call ask_user for a missing username/email or ask_phone_number for a missing phone number. "
             "Never request passwords in chat."
             " If the website explicitly rejects the password, call again with force_refresh=true to "
-            "ask the owner to replace it in the same editor. Wait for their save, then use the newly returned placeholder."
+            "send a fresh one-time secure form. Wait for their save, then use the newly returned placeholder."
         )
         async def need_password(domain: str, force_refresh: bool = False, browser_session: Optional[BrowserSession] = None) -> ActionResult:
             return await load_credentials(domain, browser_session, "password", force_refresh=force_refresh)

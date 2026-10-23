@@ -11,6 +11,7 @@ from app.config import settings
 from app.db.engine import async_session_factory
 from app.db.repository import UserRepository
 from app.browser.profiles import load_session_profiles, save_session_profiles
+from app.security.browser_access import profile_lock, profile_revision, register_browser, unregister_browser
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,7 @@ async def browser_session_context(
     active_storage_state = storage_state
     profile_owner = user_id
     loaded_domains: set[str] = set()
+    revision = 0
 
     if telegram_id:
         try:
@@ -139,11 +141,14 @@ async def browser_session_context(
             profile_owner = None
             logger.warning("Could not resolve browser profile owner for Telegram user %s", telegram_id)
 
-    if active_storage_state is None and profile_owner:
-        try:
-            active_storage_state, loaded_domains = await load_session_profiles(profile_owner, task_prompt, site_domain)
-        except Exception:
-            logger.warning("Could not load browser profiles for user %s", profile_owner)
+    if profile_owner:
+        async with profile_lock(profile_owner):
+            revision = profile_revision(profile_owner)
+            if active_storage_state is None:
+                try:
+                    active_storage_state, loaded_domains = await load_session_profiles(profile_owner, task_prompt, site_domain)
+                except Exception:
+                    logger.warning("Could not load browser profiles for user %s", profile_owner)
 
     session = browser or create_browser(
         headless=headless,
@@ -151,6 +156,8 @@ async def browser_session_context(
         allowed_domains=allowed_domains,
     )
     logger.info("Starting browser session...")
+    if profile_owner:
+        register_browser(profile_owner)
     started = False
     try:
         await session.start()
@@ -158,16 +165,22 @@ async def browser_session_context(
         yield session
     finally:
         try:
-            if profile_owner and started:
+            if profile_owner and started and revision == profile_revision(profile_owner):
                 try:
                     async with asyncio.timeout(SESSION_STORAGE_TIMEOUT_SECONDS):
                         exported = await _export_session_state(session, active_storage_state)
-                        await save_session_profiles(profile_owner, exported, loaded_domains)
+                        await save_session_profiles(profile_owner, exported, loaded_domains, expected_revision=revision)
                 except Exception:
                     logger.warning("Could not save browser profiles for user %s", profile_owner)
         finally:
             logger.info("Stopping browser session...")
             try:
-                await session.stop()
+                if profile_owner and revision != profile_revision(profile_owner):
+                    await session.kill()
+                else:
+                    await session.stop()
             except Exception:
                 logger.warning("Error occurred while stopping browser session")
+            finally:
+                if profile_owner:
+                    unregister_browser(profile_owner)

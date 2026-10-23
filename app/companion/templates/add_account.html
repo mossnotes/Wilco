@@ -1,0 +1,36 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<section>
+    <a class="back-link" href="/companion/accounts">← {{ ui.accounts }}</a>
+    <div class="page-heading"><h1>{{ ui.add_account }}</h1></div>
+    <form id="account-create-form" class="form-stack" novalidate>
+        <div class="field"><label for="site_domain">{{ ui.website }}</label><input id="site_domain" name="site_domain" type="text" inputmode="url" autocapitalize="none" spellcheck="false" autocomplete="off" required></div>
+        {% for field in account_fields %}
+        <div class="field">
+            <label for="{{ field }}">{{ ui[field] }}</label>
+            <input id="{{ field }}" name="{{ field }}" type="{{ 'email' if field == 'email' else 'text' }}"
+                   maxlength="{{ 64 if field == 'phone' else 10 if field == 'country_code' else 320 }}"
+                   inputmode="{{ 'tel' if field in ('phone', 'country_code') else 'email' if field == 'email' else 'text' }}"
+                   autocomplete="off" autocapitalize="none" spellcheck="false"
+                   {% if field == 'phone' %}aria-describedby="phone-hint"{% endif %}>
+            {% if field == 'phone' %}<p class="field-hint" id="phone-hint">{{ ui.phone_hint }}</p>{% endif %}
+        </div>
+        {% endfor %}
+        {% for field in secret_fields %}
+        {% set label = ui.authenticator_key if field == 'totp_seed' else ui[field] %}
+        <div class="field">
+            <label for="{{ field }}">{{ label }}</label>
+            <div class="secret-field">
+                <input id="{{ field }}" name="{{ field }}" type="password" autocomplete="new-password" autocapitalize="none" spellcheck="false" maxlength="{{ 1024 if field == 'totp_seed' else 16384 }}">
+                <button class="icon-button secret-toggle" type="button" data-toggle-secret aria-label="{{ label }}" aria-controls="{{ field }}" aria-pressed="false">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path class="eye-slash" d="m3 3 18 18" hidden/></svg>
+                </button>
+            </div>
+        </div>
+        {% endfor %}
+        <p class="feedback" role="alert" hidden></p>
+        <div class="actions"><button class="button" type="submit">{{ ui.save_to_vault }}</button></div>
+    </form>
+</section>
+{% endblock %}

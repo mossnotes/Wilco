@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.browser.credentials_resolver import extract_candidate_domains, get_domain_slug
+from app.security.browser_access import profile_lock, profile_revision
 from app.config import settings
 from app.db.engine import async_session_factory
 from app.db.repository import BrowserProfileRepository
@@ -81,9 +82,12 @@ async def load_session_profiles(
 
 async def save_session_profiles(
     user_id: uuid.UUID, state: dict[str, Any], loaded_domains: set[str],
+    *, expected_revision: int | None = None,
 ) -> None:
     grouped = _split_storage_state(state)
-    async with async_session_factory() as db:
+    async with profile_lock(user_id), async_session_factory() as db:
+        if expected_revision is not None and expected_revision != profile_revision(user_id):
+            return
         # Empty exported state replaces loaded state too, so logging out cannot
         # resurrect an old authentication cookie on the next task.
         for domain in sorted(loaded_domains | grouped.keys()):

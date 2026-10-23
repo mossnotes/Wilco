@@ -58,6 +58,13 @@ svg { display: block; flex-shrink: 0; }
 .site-icon img { object-fit: contain; }
 .site-monogram { font-size: 18px; color: #737373; }
 .save-status { font-size: 14px; color: #426647; }
+.account-arrow { margin-left: auto; color: #969696; font-size: 23px; }
+.back-link { display: inline-flex; align-items: center; min-height: 44px; margin-bottom: 24px; color: #737373; font-size: 14px; }
+.delete-notice { margin-bottom: 24px; color: #606060; font-size: 14px; }
+.account-details { display: grid; gap: 24px; margin: 0; }
+.account-details dt { color: #737373; font-size: 14px; }
+.account-details dd { margin: 4px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.actions.account-delete-action { margin-top: 36px; }
 
 .button {
     display: inline-flex;

@@ -262,6 +262,7 @@ async def run_browser_task(
         await conversation_memory.remember(
             task.user_id, task.chat_id, "tool", outcome, secrets=_credential_values(sensitive_data),
         )
+        sensitive_data.clear()
         try:
             async with async_session_factory() as session:
                 await TaskRepository.save_task(session, task)

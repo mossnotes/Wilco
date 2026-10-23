@@ -190,11 +190,10 @@ async def test_missing_credentials_webapp_roundtrip(async_client, monkeypatch, t
         assert "vercel.com" in response.text
         auth = await async_client.post("/companion/auth/telegram", json={"init_data": telegram_identity(user.telegram_id)})
         assert auth.status_code == 200
-        response = await async_client.post("/api/vault/credentials", json={
-            "site_domain": "vercel.com", "auth_type": "password", "secret": "  exact password  ",
+        response = await async_client.post(f"/api/tasks/{task.task_id}/resolve-input", json={
+            "credential_type": "password", "secret": "  exact password  ",
         })
-        assert response.status_code == 201
-        assert response.json()["resumed"] is True
+        assert response.status_code == 200
         result = await asyncio.wait_for(action_task, 5)
         assert result.error is None
         assert shared["https://*.vercel.com"]["vercel_pass"] == "  exact password  "
@@ -211,9 +210,9 @@ async def test_missing_credentials_webapp_roundtrip(async_client, monkeypatch, t
             saved = await TaskRepository.get_task(db, task.task_id)
             assert saved.state == TaskState.RUNNING
             assert "exact password" not in saved.model_dump_json()
-        assert "token" not in parse_qs(link.query)
+        assert "token" in parse_qs(link.query)
         reopened = await async_client.get(f"{link.path}?{link.query}")
-        assert reopened.status_code == 200
+        assert reopened.status_code == 410
     finally:
         if not action_task.done():
             action_task.cancel()

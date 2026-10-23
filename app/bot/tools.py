@@ -8,7 +8,6 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, W
 
 from app.config import settings
 from app.tasks.registry import task_registry
-from app.tasks.state import TaskState
 
 ToolRoute = Literal["browser", "companion", "help", "cancel"]
 
@@ -37,7 +36,7 @@ ASSISTANT_TOOLS = (
         "Open Wilco's secure Companion App for the requesting user. Use when they "
         "ask to get set up, link their Telegram account, open the Companion, or "
         "add/manage saved credentials. Sends a persistent Companion button with Telegram sign-in "
-        "directly in their private chat, or reopens their pending credential request. "
+        "directly in their private chat. Credential requests use separate one-time links. "
         "Never use just for a greeting, to log into an external website, or to ask "
         "for a one-time code. Never collect passwords, API keys, or authenticator "
         "seeds in chat. Takes no arguments: identity, destination and URL are bound "
@@ -76,14 +75,7 @@ async def open_companion(message: Message) -> str:
         await message.answer("Message me privately to open your secure Companion App.", parse_mode=None)
         return "Companion access requires the requesting user's private chat; no link was issued."
 
-    active = task_registry.get_by_chat(message.chat.id)
-    task = active[0] if active else None
-    url = (
-        task.metadata.get("companion_url")
-        if task and task.user_id == user_id and task.state == TaskState.NEEDS_INPUT else None
-    )
-    if not url:
-        url = f"{settings.COMPANION_BASE_URL.rstrip('/')}/accounts"
+    url = f"{settings.COMPANION_BASE_URL.rstrip('/')}/accounts"
 
     button = (
         InlineKeyboardButton(text="Open Wilco Companion App", web_app=WebAppInfo(url=url))

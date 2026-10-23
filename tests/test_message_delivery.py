@@ -266,7 +266,7 @@ async def test_normal_mode_hides_all_background_progress(monkeypatch):
     bot.edit_message_text.assert_not_awaited()
 
 
-async def test_normal_mode_keeps_credential_prompt_and_button_after_resume(monkeypatch):
+async def test_normal_mode_removes_used_credential_button_after_resume(monkeypatch):
     monkeypatch.setattr(settings, "TELEGRAM_DEBUG_STATUS", False)
     bot = AsyncMock()
     bot.send_message.return_value.message_id = 99
@@ -282,7 +282,7 @@ async def test_normal_mode_keeps_credential_prompt_and_button_after_resume(monke
     assert call["reply_markup"].inline_keyboard[0][0].web_app
     task.transition_to(TaskState.RUNNING)
     await manager.update(task)
-    bot.edit_message_reply_markup.assert_not_awaited()
+    bot.edit_message_reply_markup.assert_awaited_once_with(chat_id=42, message_id=99, reply_markup=None)
     assert task.message_id is None
 
 
@@ -294,17 +294,19 @@ async def test_chat_input_does_not_create_redundant_status_prompt(monkeypatch):
     bot.send_message.assert_not_awaited()
 
 
-async def test_debug_mode_also_keeps_a_permanent_editor_button(monkeypatch):
+async def test_debug_mode_removes_credential_button_when_request_ends(monkeypatch):
     monkeypatch.setattr(settings, "TELEGRAM_DEBUG_STATUS", True)
     bot = AsyncMock()
     manager = StatusManager(bot)
     task = TaskRecord(user_id=1, chat_id=1, prompt="Login", message_id=42, state=TaskState.NEEDS_INPUT)
-    task.metadata.update(target_domain="example.com", credential_type="password", companion_url="https://wilco.example/companion/credentials?domain=example.com")
+    task.metadata.update(target_domain="example.com", credential_type="password", companion_url="https://wilco.example/companion/link?token=one-time")
     await manager.update(task)
-    button = bot.send_message.call_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    button = bot.edit_message_text.call_args.kwargs["reply_markup"].inline_keyboard[0][0]
     assert button.web_app.url == task.metadata["companion_url"]
     task.transition_to(TaskState.RUNNING)
     await manager.update(task, force=True)
+    assert bot.edit_message_text.call_args.kwargs["reply_markup"] is None
+    bot.send_message.assert_not_awaited()
     bot.edit_message_reply_markup.assert_not_awaited()
 
 

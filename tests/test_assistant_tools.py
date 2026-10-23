@@ -54,7 +54,9 @@ async def test_companion_link_is_stable_and_never_mints_pairing_tokens(monkeypat
     assert button.web_app.url == "https://wilco.example/companion/accounts"
 
 
-async def test_companion_reopens_own_pending_link_without_minting_another(monkeypatch):
+async def test_main_companion_always_opens_accounts_separately_from_one_time_input(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "COMPANION_BASE_URL", "https://wilco.example/companion")
     msg = message()
     task = TaskRecord(user_id=123, chat_id=123, prompt="Login", state=TaskState.NEEDS_INPUT)
     task.metadata["companion_url"] = "https://wilco.example/companion/link?token=existing"
@@ -62,7 +64,7 @@ async def test_companion_reopens_own_pending_link_without_minting_another(monkey
     with patch("app.db.repository.IdentityTokenRepository.create_token") as database:
         await execute_assistant_tool("companion", msg)
     database.assert_not_called()
-    assert msg.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][0].web_app.url == task.metadata["companion_url"]
+    assert msg.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][0].web_app.url == "https://wilco.example/companion/accounts"
 
 
 async def test_help_tool_is_read_only_and_uses_natural_language():

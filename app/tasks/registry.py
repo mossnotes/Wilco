@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import dataclass, field
 import logging
+import secrets
 import time
 from typing import Any, Dict, Optional, Tuple
 
@@ -18,6 +19,7 @@ class CredentialInputRequest:
     task: TaskRecord
     domain: str
     deadline: float
+    request_id: str = field(default_factory=lambda: secrets.token_urlsafe(24), repr=False)
     event: asyncio.Event = field(default_factory=asyncio.Event)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -106,12 +108,22 @@ class ActiveTaskRegistry:
     def get_credential_input(self, task_id: str) -> Optional[CredentialInputRequest]:
         return self._credential_inputs.get(task_id)
 
-    def credential_inputs_for(self, telegram_id: int, domain: str, credential_type: str) -> list[CredentialInputRequest]:
-        return [
-            pending for pending in self._credential_inputs.values()
-            if pending.task.user_id == telegram_id and pending.domain == domain
-            and pending.task.metadata.get("credential_type", "password") == credential_type
-        ]
+    def cancel_tasks_for_user(self, telegram_id: int) -> set[asyncio.Task]:
+        """Discard live browser access when the owner deletes a vault account."""
+        cancelled = set()
+        pending_inputs = list(self._credential_inputs.values()) + list(self._chat_inputs.values())
+        for pending in pending_inputs:
+            if pending.task.user_id == telegram_id and not pending.task.is_terminal:
+                pending.task.transition_to(TaskState.FAILED, status_message="Stopped after a saved account was deleted.", error="Account access revoked")
+                pending.event.set()
+        for task, running, _ in list(self._active_by_id.values()):
+            if task.user_id == telegram_id and not running.done():
+                if not task.is_terminal:
+                    task.transition_to(TaskState.FAILED, status_message="Stopped after a saved account was deleted.", error="Account access revoked")
+                if not running.cancelling():
+                    running.cancel()
+                cancelled.add(running)
+        return cancelled
 
     def clear_credential_input(self, task_id: str) -> None:
         self._credential_inputs.pop(task_id, None)

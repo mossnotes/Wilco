@@ -65,7 +65,7 @@ def credential_input_keyboard(task: TaskRecord) -> Optional[InlineKeyboardMarkup
     domain = task.metadata.get("target_domain")
     if not url or not domain:
         return None
-    label = f"Manage {domain} credentials"
+    label = f"Enter {domain} credentials"
     # Telegram requires HTTPS for WebApp buttons; keep the local development fallback.
     button = (
         InlineKeyboardButton(text=label, web_app=WebAppInfo(url=url))
@@ -150,12 +150,6 @@ class StatusManager:
         if not self.debug_status:
             await self._notify_user(task)
             return
-        if task.state == TaskState.NEEDS_INPUT and not task.metadata.get("chat_input_field"):
-            # Debug cards are edited in place; keep a separate permanent editor entry.
-            await self._notify_user(task)
-        else:
-            self._input_message_id = None
-            self._input_url = None
         if task.message_id is None:
             logger.warning(f"Cannot update status for task {task.task_id}: message_id is not set.")
             return
@@ -219,7 +213,12 @@ class StatusManager:
                 return
 
             if self._input_message_id is not None:
-                # This message is a permanent entry point to the site's vault editor.
+                try:
+                    await self.bot.edit_message_reply_markup(
+                        chat_id=task.chat_id, message_id=self._input_message_id, reply_markup=None,
+                    )
+                except Exception:
+                    logger.warning("Could not remove an expired credential button")
                 self._input_message_id = None
                 self._input_url = None
 

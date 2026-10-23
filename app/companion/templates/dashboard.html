@@ -5,76 +5,22 @@
 <section>
     <div class="page-heading">
         <h1>{{ ui.accounts }}</h1>
-        <button class="button button-small" id="add-account" type="button">{{ ui.add_account }}</button>
+        <a class="button button-small" href="/companion/accounts/new">{{ ui.add_account }}</a>
     </div>
-    <ul class="account-list" id="credentials-container">
-        {% for cred in credentials %}
-        <li class="account-row" id="cred-card-{{ cred.id }}">
-            {% if cred.auth_type in ('password', 'api_key', 'totp_seed') %}
-            <a class="account-identity" href="/companion/credentials?domain={{ cred.site_domain | urlencode }}&amp;credential_type={{ cred.auth_type }}">
-                {{ site_icon(cred.site_domain) }}
-                <span><span class="domain">{{ cred.site_domain }}</span><span class="credential-kind">{{ {'password': ui.password, 'api_key': ui.api_key, 'totp_seed': ui.authenticator_key}[cred.auth_type] }}</span></span>
+    <ul class="account-list" id="accounts-container">
+        {% for account in accounts %}
+        <li class="account-row">
+            <a class="account-identity" href="/companion/accounts/{{ account.site_domain | urlencode }}">
+                {{ site_icon(account.site_domain) }}<span class="domain">{{ account.site_domain }}</span>
+                <svg class="account-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
             </a>
-            {% else %}
-            <span class="account-identity">{{ site_icon(cred.site_domain) }}<span class="domain">{{ cred.site_domain }}</span></span>
-            {% endif %}
-            <button class="icon-button" type="button" data-remove-id="{{ cred.id }}" data-domain="{{ cred.site_domain }}" aria-label="{{ ui.remove }}">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13M10 10v7m4-7v7"/></svg>
-            </button>
         </li>
         {% endfor %}
     </ul>
 </section>
-
 <template id="account-row-template">
     <li class="account-row">
-        <a class="account-identity"><span class="site-icon" aria-hidden="true"><span class="site-monogram"></span><img data-site-icon width="24" height="24" alt="" referrerpolicy="no-referrer" loading="eager" decoding="async" hidden></span><span><span class="domain"></span><span class="credential-kind"></span></span></a>
-        <button class="icon-button" type="button" aria-label="{{ ui.remove }}">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13M10 10v7m4-7v7"/></svg>
-        </button>
+        <a class="account-identity"><span class="site-icon" aria-hidden="true"><span class="site-monogram"></span><img data-site-icon width="24" height="24" alt="" referrerpolicy="no-referrer" loading="eager" decoding="async" hidden></span><span class="domain"></span><svg class="account-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></a>
     </li>
 </template>
-
-<dialog id="add-modal" aria-labelledby="add-title">
-    <h2 id="add-title">{{ ui.add_account }}</h2>
-    <form id="add-cred-form" class="form-stack" novalidate>
-        <div class="field">
-            <label for="site_domain">{{ ui.website }}</label>
-            <input id="site_domain" name="site_domain" type="text" inputmode="url" autocapitalize="none" spellcheck="false" autocomplete="off" required>
-        </div>
-        <div class="field">
-            <label for="auth_type">{{ ui.type }}</label>
-            <select id="auth_type" name="auth_type">
-                <option value="password">{{ ui.password }}</option>
-                <option value="totp_seed">{{ ui.authenticator_key }}</option>
-                <option value="api_key">{{ ui.api_key }}</option>
-            </select>
-        </div>
-        <div class="field" id="identifier-group">
-            <label for="username_or_identifier">{{ ui.username_or_email }}</label>
-            <input id="username_or_identifier" name="username_or_identifier" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="320">
-        </div>
-        <div class="field">
-            <label for="secret" id="secret-label">{{ ui.password }}</label>
-            <input id="secret" name="secret" type="password" autocomplete="new-password" spellcheck="false" required>
-        </div>
-        <p id="modal-error" class="feedback" role="alert" hidden></p>
-        <div class="actions">
-            <button class="button button-secondary" type="button" data-close-dialog>{{ ui.cancel }}</button>
-            <button class="button" type="submit" id="save-btn">{{ ui.save }}</button>
-        </div>
-    </form>
-</dialog>
-
-<dialog id="remove-modal" aria-labelledby="remove-title">
-    <h2 id="remove-title">{{ ui.remove_account }}</h2>
-    <p class="dialog-domain" id="remove-domain"></p>
-    <form id="remove-form" class="form-stack">
-        <p id="remove-error" class="feedback" role="alert" hidden></p>
-        <div class="actions">
-            <button class="button button-secondary" type="button" data-close-dialog>{{ ui.cancel }}</button>
-            <button class="button" type="submit">{{ ui.remove }}</button>
-        </div>
-    </form>
-</dialog>
 {% endblock %}

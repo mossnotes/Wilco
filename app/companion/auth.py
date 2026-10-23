@@ -79,21 +79,46 @@ def decode_session_token(token_str: str) -> Optional[dict]:
         return None
 
     try:
-        decrypted = decrypt_secret(token_str.strip(), settings.vault_key_bytes)
-        data = json.loads(decrypted)
-
-        # Check expiration
+        data = json.loads(decrypt_secret(token_str.strip(), settings.vault_key_bytes))
         if data.get("exp", 0) < time.time():
-            logger.debug("Session token has expired")
             return None
-
-        return {
-            "uid": uuid.UUID(data["uid"]),
-            "tg": int(data["tg"]),
-        }
-    except Exception as exc:
-        logger.debug(f"Failed to decode session token: {exc}")
+        return {"uid": uuid.UUID(data["uid"]), "tg": int(data["tg"])}
+    except Exception:
         return None
+
+
+def create_input_session(user: User, pending) -> str:
+    """A short-lived capability usable only for this one credential submission."""
+    return encrypt_secret(json.dumps({
+        "purpose": "credential_input", "user_id": str(user.id),
+        "telegram_id": user.telegram_id, "task_id": pending.task.task_id,
+        "request_id": pending.request_id, "exp": pending.deadline,
+    }), settings.vault_key_bytes)
+
+
+async def get_input_user(request: Request, session: AsyncSession = Depends(get_db)) -> User:
+    token = request.headers.get("X-Credential-Input")
+    if not token:
+        return await get_current_user(request, session)
+    from app.tasks.registry import task_registry
+
+    try:
+        data = json.loads(decrypt_secret(token, settings.vault_key_bytes))
+        pending = task_registry.get_credential_input(request.path_params["task_id"])
+        if (
+            data["purpose"] != "credential_input" or data["exp"] <= time.time()
+            or not pending or not pending.is_pending
+            or data["task_id"] != pending.task.task_id
+            or data["request_id"] != pending.request_id
+            or data["telegram_id"] != pending.task.user_id
+        ):
+            raise ValueError()
+        user = await UserRepository.get_by_id(session, uuid.UUID(data["user_id"]))
+        if user and user.telegram_id == data["telegram_id"]:
+            return user
+    except Exception:
+        pass
+    raise HTTPException(status_code=401, detail="This credential request has expired")
 
 
 async def get_current_user_optional(
