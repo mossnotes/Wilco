@@ -128,7 +128,7 @@ For Browserbase, set `BROWSER_TYPE=browserbase`, `BROWSERBASE_API_KEY`, and `BRO
 
 ## Deploying on a Google Cloud VM
 
-The current architecture suits one continuously running Compute Engine VM with **one application process**. An `e2-standard-2` VM (2 vCPUs, 8 GB RAM) is a reasonable pilot starting point; measure representative browser tasks before increasing concurrency. No Docker image or automated cloud deployment is included yet.
+The current architecture suits one continuously running Compute Engine VM with **one application process**. An `e2-standard-2` VM (2 vCPUs, 8 GB RAM) is a reasonable pilot starting point; measure representative browser tasks before increasing concurrency. See [DEPLOYMENT.md](DEPLOYMENT.md) for the Docker build, persistent SQLite storage, and HTTPS setup. Automated cloud deployment is not included yet.
 
 For webhook mode, configure:
 
@@ -160,7 +160,7 @@ uv run pytest -q
 
 Tests mock external model, Telegram, and browser calls and do not require provider credentials or an installed browser. See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidance.
 
-[GitHub Actions](.github/workflows/ci.yml) installs the locked dependencies and runs the tests on Linux and Windows for pushes and pull requests. It does not deploy anything. A later deployment workflow can build a container, publish it to Artifact Registry, and update the VM only after CI succeeds.
+[GitHub Actions](.github/workflows/ci.yml) installs the locked dependencies and runs the tests on Linux and Windows for pushes and pull requests. It also builds the Docker image and checks HTTP and Chromium startup. It does not deploy anything. A later deployment workflow can publish the image to Artifact Registry and update the VM only after CI succeeds.
 
 ## Current limits
 

@@ -1,0 +1,36 @@
+services:
+  app:
+    image: wilco:local
+    build:
+      context: .
+    init: true
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8000"
+      DEBUG: "false"
+      BROWSER_HEADLESS: "true"
+      ANONYMIZED_TELEMETRY: "false"
+      # This single-VM configuration always stores SQLite on the named volume.
+      DATABASE_URL: sqlite+aiosqlite:////data/wilco.db
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - wilco_data:/data
+    shm_size: 1gb
+    mem_limit: 6g
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  wilco_data:

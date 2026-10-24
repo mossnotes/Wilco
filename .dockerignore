@@ -1,0 +1,20 @@
+# Allow only the files required by the runtime image into the build context.
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!main.py
+!app/
+!app/**
+
+# Exclude Python caches and temporary runtime files within app/ too.
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.env*
+**/*.db
+**/*.db-*
+**/*.sqlite*

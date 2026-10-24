@@ -45,3 +45,44 @@ jobs:
         run: uv sync --locked
       - name: Run tests
         run: uv run --no-sync pytest -q
+
+  docker:
+    name: Docker startup
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build runtime image
+        run: docker build --tag wilco:ci .
+      - name: Start application without external credentials
+        run: |
+          docker run --detach --name wilco-ci --init --shm-size=1g \
+            --cap-drop=ALL --security-opt=no-new-privileges:true \
+            --publish 127.0.0.1:8000:8000 \
+            --env DATABASE_URL=sqlite+aiosqlite:////data/wilco.db \
+            wilco:ci
+          timeout 90 bash -c 'until curl --fail --silent http://127.0.0.1:8000/health; do sleep 2; done'
+      - name: Verify headless Chromium starts as the application user
+        run: |
+          docker exec -i wilco-ci python - <<'PY'
+          import asyncio
+          from app.browser.context import create_browser
+
+          async def main():
+              browser = create_browser(keep_alive=False)
+              try:
+                  await browser.start()
+              finally:
+                  await browser.kill()
+
+          asyncio.run(main())
+          PY
+      - name: Show container logs on failure
+        if: failure()
+        run: docker logs wilco-ci || true
+      - name: Remove test container
+        if: always()
+        run: docker rm --force wilco-ci || true
