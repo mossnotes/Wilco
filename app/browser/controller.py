@@ -142,7 +142,7 @@ class SecureController(Controller):
             token.expires_at = datetime.fromtimestamp(deadline, timezone.utc)
             await db.commit()
         query = urlencode({"token": token.token, "task_id": task.task_id, "domain": domain})
-        companion_url = f"{settings.COMPANION_BASE_URL.rstrip('/')}/link?{query}"
+        companion_url = f"{settings.VAULT_BASE_URL.rstrip('/')}/vault/link?{query}"
         task.metadata.update({
             "target_domain": domain,
             "credential_input_deadline": deadline,

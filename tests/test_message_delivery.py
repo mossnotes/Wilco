@@ -273,7 +273,7 @@ async def test_normal_mode_removes_used_credential_button_after_resume(monkeypat
     manager = StatusManager(bot)
     task = TaskRecord(user_id=1, chat_id=42, prompt="Login")
     task.transition_to(TaskState.NEEDS_INPUT, status_message="INTERNAL DETAIL")
-    task.metadata.update(target_domain="example.com", credential_type="password", companion_url="https://example.com/companion")
+    task.metadata.update(target_domain="example.com", credential_type="password", companion_url="https://example.com/vault")
     await asyncio.gather(manager.update(task), manager.update(task))
     bot.send_message.assert_awaited_once()
     call = bot.send_message.call_args.kwargs
@@ -299,7 +299,7 @@ async def test_debug_mode_removes_credential_button_when_request_ends(monkeypatc
     bot = AsyncMock()
     manager = StatusManager(bot)
     task = TaskRecord(user_id=1, chat_id=1, prompt="Login", message_id=42, state=TaskState.NEEDS_INPUT)
-    task.metadata.update(target_domain="example.com", credential_type="password", companion_url="https://wilco.example/companion/link?token=one-time")
+    task.metadata.update(target_domain="example.com", credential_type="password", companion_url="https://wilco.example/vault/link?token=one-time")
     await manager.update(task)
     button = bot.edit_message_text.call_args.kwargs["reply_markup"].inline_keyboard[0][0]
     assert button.web_app.url == task.metadata["companion_url"]

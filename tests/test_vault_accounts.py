@@ -32,7 +32,7 @@ async def database():
 
 async def sign_in(client, identity):
     telegram_id = uuid.uuid4().int % 10**12
-    response = await client.post("/companion/auth/telegram", json={"init_data": identity(telegram_id)})
+    response = await client.post("/vault/auth/telegram", json={"init_data": identity(telegram_id)})
     assert response.status_code == 200
     async with async_session_factory() as db:
         return await UserRepository.get_by_telegram_id(db, telegram_id)
@@ -93,7 +93,7 @@ async def test_invalid_telegram_identity_cannot_create_vault_session(async_clien
         raw = telegram_identity(True)
     else:
         raw = "user=%7B%22id%22%3A123%7D"
-    response = await async_client.post("/companion/auth/telegram", json={"init_data": raw})
+    response = await async_client.post("/vault/auth/telegram", json={"init_data": raw})
     assert response.status_code == 401 and SESSION_COOKIE_NAME not in response.cookies
     assert (await async_client.get("/api/vault/accounts")).status_code == 401
 
@@ -105,7 +105,7 @@ async def test_link_opens_once_and_can_only_submit_its_credential(async_client, 
     async with credential_request(user, auth_type=auth_type) as (task, controller, running):
         url = local_url(task.metadata["companion_url"])
         raw_token = parse_qs(urlsplit(url).query)["token"][0]
-        promoted = await async_client.get("/companion/link", params={"token": raw_token})
+        promoted = await async_client.get("/vault/link", params={"token": raw_token})
         assert promoted.status_code == 401 and SESSION_COOKIE_NAME not in promoted.cookies
         page = await async_client.get(url)
         assert page.status_code == 200 and "🔐 Save to Vault</button>" in page.text
@@ -188,9 +188,9 @@ async def test_grouped_account_details_and_atomic_editing(async_client, telegram
     response = await async_client.put("/api/vault/accounts/EXAMPLE.com", json=values)
     assert response.status_code == 200
     assert (await async_client.get("/api/vault/accounts")).json() == [{"site_domain": "example.com"}]
-    page = await async_client.get("/companion/accounts")
+    page = await async_client.get("/vault/accounts")
     assert page.text.count('class="account-row"') == 2  # one row plus the client template
-    details_page = await async_client.get("/companion/accounts/example.com")
+    details_page = await async_client.get("/vault/accounts/example.com")
     for value in values.values():
         assert value not in details_page.text
     details_response = await async_client.get("/api/vault/accounts/example.com")
@@ -229,7 +229,7 @@ async def test_signed_session_works_without_cookies_and_isolates_owners(async_cl
     first = await sign_in(async_client, telegram_identity)
     await async_client.put("/api/vault/accounts/example.com", json={"username": "first-owner"})
     old_cookie = async_client.cookies.get(SESSION_COOKIE_NAME)
-    response = await async_client.post("/companion/auth/telegram", json={"init_data": telegram_identity(first.telegram_id + 1)})
+    response = await async_client.post("/vault/auth/telegram", json={"init_data": telegram_identity(first.telegram_id + 1)})
     headers = {"Authorization": "Bearer " + response.json()["session_token"]}
     async_client.cookies.clear()
     assert (await async_client.get("/api/vault/accounts", headers=headers)).json() == []

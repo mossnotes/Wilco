@@ -85,7 +85,7 @@ The server listens on `http://localhost:8000` by default:
 
 - `/health`: process liveness and basic configuration.
 - `/docs`: FastAPI's API documentation.
-- `/companion/accounts`: Vault, opened and authenticated through Telegram.
+- `/vault/accounts`: Vault, opened and authenticated through Telegram.
 
 Message your bot privately. For example:
 
@@ -99,7 +99,7 @@ Message your bot privately. For example:
 Expose local port 8000 through an HTTPS tunnel, or use your deployed HTTPS domain, then set:
 
 ```dotenv
-COMPANION_BASE_URL=https://your-domain.example/companion
+VAULT_BASE_URL=https://your-domain.example
 ```
 
 Restart Wilco and ask the bot to open Vault. Use the button inside Telegram so the Mini App can supply the signed Telegram identity. A plain browser tab does not provide that identity.
@@ -114,7 +114,7 @@ Polling and Vault are independent: polling can remain enabled while Vault uses y
 | --- | --- |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./wilco.db` |
 | `BOT_MODE` | The example uses `polling`; the application default is `webhook`. |
-| `COMPANION_BASE_URL` | Public address ending in `/companion` for Vault. |
+| `VAULT_BASE_URL` | Public HTTPS origin for Vault, without a path; Wilco appends `/vault/...`. |
 | `BROWSER_TYPE` | `local` or `browserbase`. |
 | `BROWSER_HEADLESS` | `true`; set `false` to show the local browser window. |
 | `TASK_TIMEOUT_SECONDS` | `300`, including time spent waiting for browser-task input. |
@@ -136,7 +136,7 @@ For webhook mode, configure:
 BOT_MODE=webhook
 TELEGRAM_WEBHOOK_URL=https://your-domain.example
 TELEGRAM_WEBHOOK_SECRET=<a random secret>
-COMPANION_BASE_URL=https://your-domain.example/companion
+VAULT_BASE_URL=https://your-domain.example
 ```
 
 Wilco appends `WEBHOOK_PATH` (default `/webhook/telegram`) and registers the webhook on startup. Put an HTTPS reverse proxy in front of port 8000. Use a different bot token for staging; one bot has one active webhook destination.

@@ -62,7 +62,7 @@ async def test_vault_tool_delivers_stable_account_link(mock_message_router):
     assert reply_markup is not None
     button = reply_markup.inline_keyboard[0][0]
     assert button.text == "🔐 Open Vault"
-    assert (button.url or button.web_app.url) == f"{settings.COMPANION_BASE_URL.rstrip('/')}/accounts"
+    assert (button.url or button.web_app.url) == f"{settings.VAULT_BASE_URL.rstrip('/')}/vault/accounts"
 
 
 @pytest.mark.asyncio

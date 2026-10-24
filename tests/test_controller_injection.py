@@ -160,7 +160,7 @@ async def test_decryption_failure_does_not_publish_or_log_secret(caplog):
 
 
 async def test_missing_credentials_webapp_roundtrip(async_client, monkeypatch, telegram_identity):
-    monkeypatch.setattr(settings, "COMPANION_BASE_URL", "https://wilco.example/companion")
+    monkeypatch.setattr(settings, "VAULT_BASE_URL", "https://wilco.example")
     user = await vault_user()
     task = TaskRecord(user_id=user.telegram_id, chat_id=user.telegram_id, prompt="Login to vercel.com")
     status = SimpleNamespace(update=AsyncMock())
@@ -187,7 +187,7 @@ async def test_missing_credentials_webapp_roundtrip(async_client, monkeypatch, t
         assert 'id="username"' not in response.text
         assert 'id="totp_seed"' not in response.text
         assert "vercel.com" in response.text
-        auth = await async_client.post("/companion/auth/telegram", json={"init_data": telegram_identity(user.telegram_id)})
+        auth = await async_client.post("/vault/auth/telegram", json={"init_data": telegram_identity(user.telegram_id)})
         assert auth.status_code == 200
         response = await async_client.post(f"/api/tasks/{task.task_id}/resolve-input", json={
             "credential_type": "password", "secret": "  exact password  ",

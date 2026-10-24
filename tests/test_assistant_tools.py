@@ -45,27 +45,27 @@ async def test_pairing_tool_never_issues_links_outside_owners_private_chat(user_
 
 async def test_companion_link_is_stable_and_never_mints_pairing_tokens(monkeypatch):
     from app.config import settings
-    monkeypatch.setattr(settings, "COMPANION_BASE_URL", "https://wilco.example/companion")
+    monkeypatch.setattr(settings, "VAULT_BASE_URL", "https://wilco.example")
     msg = message()
     with patch("app.db.repository.IdentityTokenRepository.create_token") as database:
         await execute_assistant_tool("companion", msg)
     database.assert_not_called()
     button = msg.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][0]
     assert button.text == "🔐 Open Vault"
-    assert button.web_app.url == "https://wilco.example/companion/accounts"
+    assert button.web_app.url == "https://wilco.example/vault/accounts"
 
 
 async def test_main_companion_always_opens_accounts_separately_from_one_time_input(monkeypatch):
     from app.config import settings
-    monkeypatch.setattr(settings, "COMPANION_BASE_URL", "https://wilco.example/companion")
+    monkeypatch.setattr(settings, "VAULT_BASE_URL", "https://wilco.example")
     msg = message()
     task = TaskRecord(user_id=123, chat_id=123, prompt="Login", state=TaskState.NEEDS_INPUT)
-    task.metadata["companion_url"] = "https://wilco.example/companion/link?token=existing"
+    task.metadata["companion_url"] = "https://wilco.example/vault/link?token=existing"
     monkeypatch.setattr("app.bot.tools.task_registry.get_by_chat", lambda chat_id: (task, None, None))
     with patch("app.db.repository.IdentityTokenRepository.create_token") as database:
         await execute_assistant_tool("companion", msg)
     database.assert_not_called()
-    assert msg.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][0].web_app.url == "https://wilco.example/companion/accounts"
+    assert msg.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][0].web_app.url == "https://wilco.example/vault/accounts"
 
 
 async def test_help_tool_is_read_only_and_uses_natural_language():

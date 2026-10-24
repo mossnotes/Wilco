@@ -96,7 +96,7 @@ templates.env.globals["ui"] = {
 }
 
 # Routers
-companion_router = APIRouter(prefix="/companion", tags=["vault"])
+companion_router = APIRouter(prefix="/vault", tags=["vault"])
 vault_api_router = APIRouter(prefix="/api/vault", tags=["vault"])
 tasks_api_router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -160,7 +160,7 @@ async def legacy_credential_editor(
     if not target:
         raise HTTPException(status_code=400, detail="Invalid site domain")
     # Previously sent persistent links now lead to the owner's grouped account.
-    return RedirectResponse(f"/companion/accounts/{target}", status_code=303)
+    return RedirectResponse(f"/vault/accounts/{target}", status_code=303)
 
 @companion_router.get("/link", response_class=HTMLResponse)
 async def link_identity(

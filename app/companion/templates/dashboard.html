@@ -5,12 +5,12 @@
 <section>
     <div class="page-heading">
         <h1>{{ ui.accounts }}</h1>
-        <a class="button button-small" href="/companion/accounts/new">{{ ui.add_account }}</a>
+        <a class="button button-small" href="/vault/accounts/new">{{ ui.add_account }}</a>
     </div>
     <ul class="account-list" id="accounts-container">
         {% for account in accounts %}
         <li class="account-row">
-            <a class="account-identity" href="/companion/accounts/{{ account.site_domain | urlencode }}">
+            <a class="account-identity" href="/vault/accounts/{{ account.site_domain | urlencode }}">
                 {{ site_icon(account.site_domain) }}<span class="domain">{{ account.site_domain }}</span>
                 <svg class="account-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
             </a>

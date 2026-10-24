@@ -68,7 +68,7 @@ async def test_single_secret_tool_roundtrip(async_client, kind, suffix, label, c
         assert task.metadata["credential_type"] == kind
         assert credential_input_keyboard(task) is not None
         async_client.cookies.set(SESSION_COOKIE_NAME, create_session_token(user.id, user.telegram_id))
-        page = await async_client.get(f"/companion/input?task_id={task.task_id}")
+        page = await async_client.get(f"/vault/input?task_id={task.task_id}")
         assert page.status_code == 200
         assert page.headers["cache-control"] == "no-store"
         assert f"<h1>{label}</h1>" in page.text

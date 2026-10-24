@@ -6,15 +6,15 @@
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#181816">
     <title>{{ ui.app_title }}</title>
-    <link rel="preload" href="{{ url_for('companion-static', path='fonts/gowun-batang-latin.woff2') }}" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="{{ url_for('companion-static', path='companion.css') }}">
+    <link rel="preload" href="{{ url_for('vault-static', path='fonts/gowun-batang-latin.woff2').path }}" as="font" type="font/woff2" crossorigin>
+    <link rel="stylesheet" href="{{ url_for('vault-static', path='companion.css').path }}">
     <script id="telegram-sdk" src="https://telegram.org/js/telegram-web-app.js" async></script>
-    <script src="{{ url_for('companion-static', path='companion.js') }}" defer></script>
+    <script src="{{ url_for('vault-static', path='companion.js').path }}" defer></script>
 </head>
 <body class="{{ '' if public_page else 'auth-pending' }}" data-public-page="{{ 'true' if public_page else '' }}" data-auth-user="{{ user.id if user is defined and user else '' }}"
       data-input-session="{{ input_session if input_session is defined else '' }}">
     <div class="shell">
-        <header class="app-header"><a class="wordmark" href="/companion/accounts">{{ ui.app_name }}</a></header>
+        <header class="app-header"><a class="wordmark" href="/vault/accounts">{{ ui.app_name }}</a></header>
         <p id="auth-status" class="auth-status" role="status" {% if public_page %}hidden{% endif %}>{{ ui.connecting }}</p>
         <main>{% block content %}{% endblock %}</main>
     </div>

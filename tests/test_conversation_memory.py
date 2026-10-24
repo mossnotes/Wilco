@@ -86,7 +86,7 @@ async def test_secrets_and_private_urls_are_scrubbed_before_storage_and_compacti
     secrets = ("vault-password-canary", "004291")
     text = (
         "configured-key-canary vault-password-canary 004291 "
-        "https://user:private-pass@example.com/companion/link?token=pairing-canary#fragment-canary "
+        "https://user:private-pass@example.com/vault/link?token=pairing-canary#fragment-canary "
         "<secret>browser-secret-canary</secret>"
     )
     await scope.memory.remember(scope.user_id, 42, "tool", text, secrets=secrets)

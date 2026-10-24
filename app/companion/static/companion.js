@@ -44,9 +44,9 @@
                 // The exchanged capability can submit this request only. It does
                 // not establish a general vault session or survive navigation.
                 const taskId = document.getElementById("resolve-form").dataset.taskId;
-                history.replaceState(null, "", "/companion/input?" + new URLSearchParams({ task_id: taskId }));
+                history.replaceState(null, "", "/vault/input?" + new URLSearchParams({ task_id: taskId }));
             } else if (window.Telegram?.WebApp?.initData) {
-                const response = await fetch("/companion/auth/telegram", {
+                const response = await fetch("/vault/auth/telegram", {
                     method: "POST", credentials: "same-origin",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ init_data: window.Telegram.WebApp.initData }),
@@ -142,7 +142,7 @@
     function renderAccount(account) {
         const row = document.getElementById("account-row-template").content.firstElementChild.cloneNode(true);
         row.querySelector(".domain").textContent = account.site_domain;
-        row.querySelector(".account-identity").href = "/companion/accounts/" + encodeURIComponent(account.site_domain);
+        row.querySelector(".account-identity").href = "/vault/accounts/" + encodeURIComponent(account.site_domain);
         row.querySelector(".site-monogram").textContent = account.site_domain[0].toUpperCase();
         const icon = row.querySelector("[data-site-icon]");
         initializeSiteIcon(icon);
@@ -226,7 +226,7 @@
                 const domain = new URL(value.includes("://") ? value : "https://" + value).hostname;
                 const response = await send("/api/vault/accounts/" + encodeURIComponent(domain), "PUT", payload);
                 const result = await response.json();
-                window.location.assign("/companion/accounts/" + encodeURIComponent(result.site_domain));
+                window.location.assign("/vault/accounts/" + encodeURIComponent(result.site_domain));
             } catch {
                 showError(accountForm, ui.save_failed);
             } finally {
@@ -246,7 +246,7 @@
             setBusy(removeForm, true);
             try {
                 await send("/api/vault/accounts/" + encodeURIComponent(accountDetails.dataset.targetDomain), "DELETE");
-                window.location.assign("/companion/accounts");
+                window.location.assign("/vault/accounts");
             } catch {
                 showError(removeForm, ui.remove_failed);
             } finally {

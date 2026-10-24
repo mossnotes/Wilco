@@ -172,7 +172,7 @@ async def test_debug_credential_button_flushes_immediately_without_countdown(bas
     assert bot.edit_message_text.await_count == 1
     task.transition_to(TaskState.NEEDS_INPUT, status_message="Credentials required")
     task.metadata.update({
-        "target_domain": "example.com", "companion_url": f"{base_url}/companion/link?token=opaque",
+        "target_domain": "example.com", "companion_url": f"{base_url}/vault/link?token=opaque",
         "credential_input_deadline": time.time() + 150,
     })
     await manager.update(task)

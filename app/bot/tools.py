@@ -75,7 +75,7 @@ async def open_companion(message: Message) -> str:
         await message.answer("Message me privately to open your Vault.", parse_mode=None)
         return "Vault access requires the requesting user's private chat; no link was issued."
 
-    url = f"{settings.COMPANION_BASE_URL.rstrip('/')}/accounts"
+    url = f"{settings.VAULT_BASE_URL.rstrip('/')}/vault/accounts"
 
     button = (
         InlineKeyboardButton(text="🔐 Open Vault", web_app=WebAppInfo(url=url))

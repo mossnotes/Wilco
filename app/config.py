@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     VAULT_MASTER_KEY: str = ""
 
     # Vault Web App Settings
-    COMPANION_BASE_URL: str = "http://localhost:8000/companion"
+    VAULT_BASE_URL: str = "http://localhost:8000"
 
     # Browser Task Execution
     TASK_TIMEOUT_SECONDS: int = 300

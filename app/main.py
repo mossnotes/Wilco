@@ -105,9 +105,9 @@ app = FastAPI(
 )
 
 app.mount(
-    "/companion/static",
+    "/vault/static",
     StaticFiles(directory=Path(__file__).parent / "companion" / "static"),
-    name="companion-static",
+    name="vault-static",
 )
 app.include_router(api_router)
 

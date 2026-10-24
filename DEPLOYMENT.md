@@ -12,7 +12,7 @@ This configuration runs one Wilco process with local Chromium and SQLite on a pe
 
 Copy `.env.example` to `.env` on the VM and configure the Telegram bot token, a stable vault master key, and the selected model provider's API key. Keep `.env` private and outside Git. Reuse the original vault key if moving existing encrypted account data.
 
-For the first local check, keep `BOT_MODE=polling`. Once a public HTTPS address is ready, set `COMPANION_BASE_URL` to `https://your-hostname/companion`. Webhook mode additionally requires `BOT_MODE=webhook`, `TELEGRAM_WEBHOOK_URL=https://your-hostname`, and a random `TELEGRAM_WEBHOOK_SECRET`.
+For the first local check, keep `BOT_MODE=polling`. Once a public HTTPS address is ready, set `VAULT_BASE_URL` to `https://your-hostname`, without a path. Wilco appends `/vault/...` when creating links. When upgrading an existing installation, replace `COMPANION_BASE_URL` with this setting and reopen Vault using a new button from the bot. Webhook mode additionally requires `BOT_MODE=webhook`, `TELEGRAM_WEBHOOK_URL=https://your-hostname`, and a random `TELEGRAM_WEBHOOK_SECRET`.
 
 Compose overrides `DATABASE_URL` with `sqlite+aiosqlite:////data/wilco.db`, regardless of the value in `.env`. The named volume stores the database, saved account details, conversation history, and encrypted browser profiles. An existing host-side `wilco.db` is not imported automatically. PostgreSQL deployments must change the Compose database setting and migrate existing data explicitly.
 

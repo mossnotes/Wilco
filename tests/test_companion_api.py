@@ -55,9 +55,14 @@ async def setup_test_database():
 @pytest.mark.asyncio
 async def test_unauthorized_access(async_client: AsyncClient):
     # The public dashboard shell can authenticate with Telegram on the client.
-    resp = await async_client.get("/companion/accounts")
+    resp = await async_client.get("/vault/accounts")
     assert resp.status_code == 200
     assert "<h1>Accounts</h1>" in resp.text
+    # HTTPS can terminate at a proxy while the application receives HTTP.
+    # Assets must follow the browser's origin instead of the backend's scheme.
+    assert 'href="/vault/static/companion.css"' in resp.text
+    assert 'src="/vault/static/companion.js"' in resp.text
+    assert 'href="/vault/static/fonts/gowun-batang-latin.woff2"' in resp.text
     assert_approved_page_text(resp.text)
 
     # REST vault API without auth returns 401 JSON
@@ -77,8 +82,8 @@ async def test_identity_linking_flow(async_client: AsyncClient):
         await session.commit()
         token_str = token_obj.token
 
-    # 2. Access /companion/link?token=XYZ
-    resp = await async_client.get(f"/companion/link?token={token_str}")
+    # 2. Access /vault/link?token=XYZ
+    resp = await async_client.get(f"/vault/link?token={token_str}")
     assert resp.status_code == 200
     assert "<h1>Connected</h1>" in resp.text
     assert str(telegram_id) not in resp.text
@@ -86,7 +91,7 @@ async def test_identity_linking_flow(async_client: AsyncClient):
     assert SESSION_COOKIE_NAME in resp.cookies
 
     # 3. Attempting to consume same token again must fail (one-time token)
-    resp_second = await async_client.get(f"/companion/link?token={token_str}")
+    resp_second = await async_client.get(f"/vault/link?token={token_str}")
     assert resp_second.status_code == 401
     assert "<h1>Sign in</h1>" in resp_second.text
 
@@ -102,7 +107,7 @@ async def test_companion_dashboard_authenticated(async_client: AsyncClient):
 
     async_client.cookies.set(SESSION_COOKIE_NAME, session_cookie)
 
-    resp = await async_client.get("/companion/accounts")
+    resp = await async_client.get("/vault/accounts")
     assert resp.status_code == 200
     assert "<h1>Accounts</h1>" in resp.text
     assert str(telegram_id) not in resp.text
@@ -171,7 +176,7 @@ async def test_vault_credentials_crud(async_client: AsyncClient):
 
     # The page shows only domains and never decrypts credentials to render them.
     with patch("app.companion.routes.decrypt_secret") as decrypt:
-        page = await async_client.get("/companion/accounts")
+        page = await async_client.get("/vault/accounts")
         decrypt.assert_not_called()
     assert page.status_code == 200
     assert "vercel.com" in page.text
@@ -212,7 +217,7 @@ async def test_task_needs_input_resolution(async_client: AsyncClient):
     async_client.cookies.set(SESSION_COOKIE_NAME, session_cookie)
 
     # 1. View input page
-    page_resp = await async_client.get(f"/companion/input?task_id={task.task_id}")
+    page_resp = await async_client.get(f"/vault/input?task_id={task.task_id}")
     assert page_resp.status_code == 200
     assert "<h1>Input needed</h1>" in page_resp.text
     assert task.prompt not in page_resp.text
@@ -281,7 +286,7 @@ async def test_other_user_cannot_view_or_resolve_request(async_client, credentia
         other, _ = await UserRepository.get_or_create_by_telegram_id(db, uuid.uuid4().int % 10**12)
         await db.commit()
     async_client.cookies.set(SESSION_COOKIE_NAME, create_session_token(other.id, other.telegram_id))
-    page = await async_client.get(f"/companion/input?task_id={task.task_id}&domain=example.com")
+    page = await async_client.get(f"/vault/input?task_id={task.task_id}&domain=example.com")
     assert page.status_code == 403
     response = await async_client.post(f"/api/tasks/{task.task_id}/resolve-input", json={"credentials": {"example.com": "secret"}})
     assert response.status_code == 403
@@ -318,7 +323,7 @@ async def test_credential_request_requires_live_waiter(async_client, credential_
 
 async def test_domain_query_cannot_change_requested_site(async_client, credential_request):
     _, task, _ = credential_request
-    response = await async_client.get(f"/companion/input?task_id={task.task_id}&domain=attacker.com")
+    response = await async_client.get(f"/vault/input?task_id={task.task_id}&domain=attacker.com")
     assert response.status_code == 400
     assert_approved_page_text(response.text)
 
@@ -330,21 +335,21 @@ async def test_companion_assets_are_local_and_public(async_client):
         ("companion.js", ("text/javascript", "application/javascript")),
         ("fonts/gowun-batang-latin.woff2", "font/woff2"),
     ):
-        response = await async_client.get(f"/companion/static/{path}")
+        response = await async_client.get(f"/vault/static/{path}")
         assert response.status_code == 200
         assert response.headers["content-type"].startswith(content_type)
-    font = await async_client.get("/companion/static/fonts/gowun-batang-latin.woff2")
+    font = await async_client.get("/vault/static/fonts/gowun-batang-latin.woff2")
     assert font.content.startswith(b"wOF2")
 
 
 async def test_missing_link_token_uses_approved_page(async_client):
-    response = await async_client.get("/companion/link")
+    response = await async_client.get("/vault/link")
     assert response.status_code == 401
     assert_approved_page_text(response.text)
 
 
 async def test_missing_input_task_uses_approved_page(async_client, credential_request):
-    response = await async_client.get("/companion/input")
+    response = await async_client.get("/vault/input")
     assert response.status_code == 404
     assert "<h1>Expired</h1>" in response.text
     assert_approved_page_text(response.text)
