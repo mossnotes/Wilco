@@ -326,7 +326,8 @@ async def test_domain_query_cannot_change_requested_site(async_client, credentia
 async def test_companion_assets_are_local_and_public(async_client):
     for path, content_type in (
         ("companion.css", "text/css"),
-        ("companion.js", "text/javascript"),
+        # MIME lookup varies by OS; browsers accept both JavaScript types.
+        ("companion.js", ("text/javascript", "application/javascript")),
         ("fonts/gowun-batang-latin.woff2", "font/woff2"),
     ):
         response = await async_client.get(f"/companion/static/{path}")
