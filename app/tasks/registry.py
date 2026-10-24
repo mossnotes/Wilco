@@ -5,7 +5,6 @@ import secrets
 import time
 from typing import Any, Dict, Optional, Tuple
 
-from app.config import settings
 from app.tasks.chat_input import ChatInputField
 from app.tasks.state import TaskRecord, TaskState
 
@@ -55,17 +54,12 @@ class ChatInputRequest:
 
 
 class ActiveTaskRegistry:
-    """
-    Registry for active running tasks.
-    Remediates Step 2 Gaps:
-    - Gap 1 & 2: Holds strong references to running asyncio.Task objects to prevent garbage collection mid-execution.
-    - Gap 4: Tracks tasks by chat_id and task_id to support owner-bound cancellation.
-    - Gap 5: Provides a global concurrency semaphore (MAX_CONCURRENT_BROWSERS).
+    """Track active tasks and input requests for owner-bound cancellation.
+
+    Hold strong task references and remove entries when tasks complete.
     """
 
-    def __init__(self, max_concurrent: Optional[int] = None):
-        self._max_concurrent = max_concurrent or settings.MAX_CONCURRENT_BROWSERS
-        self._semaphore: Optional[asyncio.Semaphore] = None
+    def __init__(self):
         # Mapping chat_id -> (TaskRecord, asyncio.Task, status_manager)
         self._active_by_chat: Dict[int, Tuple[TaskRecord, asyncio.Task, Any]] = {}
         # Mapping task_id -> (TaskRecord, asyncio.Task, status_manager)
@@ -127,13 +121,6 @@ class ActiveTaskRegistry:
 
     def clear_credential_input(self, task_id: str) -> None:
         self._credential_inputs.pop(task_id, None)
-
-    @property
-    def semaphore(self) -> asyncio.Semaphore:
-        """Lazy initialization of asyncio.Semaphore inside the active event loop."""
-        if self._semaphore is None:
-            self._semaphore = asyncio.Semaphore(self._max_concurrent)
-        return self._semaphore
 
     def register(
         self,

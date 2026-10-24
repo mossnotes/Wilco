@@ -37,10 +37,8 @@ class Settings(BaseSettings):
 
     # Vault Web App Settings (existing environment variable names are retained)
     COMPANION_BASE_URL: str = "http://localhost:8000/companion"
-    COMPANION_TOKEN_TTL_MINUTES: int = 10
 
-    # Concurrency & Execution Limits
-    MAX_CONCURRENT_BROWSERS: int = 2
+    # Browser Task Execution
     TASK_TIMEOUT_SECONDS: int = 300
 
     @field_validator("VAULT_MASTER_KEY")
