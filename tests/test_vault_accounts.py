@@ -108,7 +108,7 @@ async def test_link_opens_once_and_can_only_submit_its_credential(async_client, 
         promoted = await async_client.get("/companion/link", params={"token": raw_token})
         assert promoted.status_code == 401 and SESSION_COOKIE_NAME not in promoted.cookies
         page = await async_client.get(url)
-        assert page.status_code == 200 and "Save to vault</button>" in page.text
+        assert page.status_code == 200 and "🔐 Save to Vault</button>" in page.text
         assert "input-countdown" not in page.text and "data-deadline" not in page.text
         assert "https://example.com/favicon.ico" in page.text
         assert SESSION_COOKIE_NAME not in page.cookies

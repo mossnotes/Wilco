@@ -5,8 +5,8 @@ from aiogram.types import Chat, Message, User as TelegramUser
 
 from app.bot.handlers import handle_text_message
 from app.bot.message_router import MessageDecision
-from app.db.engine import async_session_factory, init_db
-from app.db.repository import IdentityTokenRepository, UserRepository
+from app.db.engine import init_db
+from app.config import settings
 from app.tasks.registry import task_registry
 from app.tasks.state import TaskRecord, TaskState
 
@@ -44,32 +44,25 @@ def make_mock_message(text: str, user_id: int = 123456, chat_id: int = 789012) -
 
 
 @pytest.mark.asyncio
-async def test_companion_tool_generates_pairing_token(mock_message_router):
-    msg = make_mock_message("Help me link my account", user_id=445566, chat_id=445566)
+async def test_vault_tool_delivers_stable_account_link(mock_message_router):
+    msg = make_mock_message("Open my Vault", user_id=445566, chat_id=445566)
     mock_message_router.return_value = MessageDecision(route="companion")
 
-    await handle_text_message(msg)
+    with patch("app.db.repository.IdentityTokenRepository.create_token") as create_token:
+        await handle_text_message(msg)
+    create_token.assert_not_called()
 
     # Verify answer was sent with inline keyboard
     msg.answer.assert_called_once()
     args, kwargs = msg.answer.call_args
     welcome_text = args[0]
-    assert "secure Companion link" in welcome_text
+    assert "Here's your Vault." in welcome_text
 
     reply_markup = kwargs.get("reply_markup")
     assert reply_markup is not None
     button = reply_markup.inline_keyboard[0][0]
-    assert "Companion App" in button.text
-
-    # Verify pairing token exists in database
-    async with async_session_factory() as session:
-        user = await UserRepository.get_by_telegram_id(session, 445566)
-        assert user is not None
-        # Check token URL contains a valid token string
-        token_str = (button.url or button.web_app.url).split("token=")[-1]
-        token_obj = await IdentityTokenRepository.get_token(session, token_str)
-        assert token_obj is not None
-        assert token_obj.telegram_id == 445566
+    assert button.text == "🔐 Open Vault"
+    assert (button.url or button.web_app.url) == f"{settings.COMPANION_BASE_URL.rstrip('/')}/accounts"
 
 
 @pytest.mark.asyncio

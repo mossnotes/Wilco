@@ -167,7 +167,7 @@ async def test_chat_reply_resumes_original_browser_task(field, value, monkeypatc
         pending = task_registry.get_chat_input(task.chat_id)
         assert pending.prompt_message_id == 456
         assert controller.status_manager.bot.send_message.call_args.kwargs["reply_markup"].force_reply
-        assert "Web Companion" not in format_status_message(task)
+        assert "Open Vault" not in format_status_message(task)
         assert credential_input_keyboard(task) is None
         assert "companion_url" not in task.metadata
         msg = message(task, value)

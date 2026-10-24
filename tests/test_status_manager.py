@@ -35,7 +35,7 @@ def test_format_status_message_all_states():
     task.transition_to(TaskState.NEEDS_INPUT, status_message="2FA required")
     needs_input_html = format_status_message(task)
     assert "🔒 <b>Status:</b> Action Required" in needs_input_html
-    assert "Web Companion" in needs_input_html
+    assert "🔐 <i>Open Vault" in needs_input_html
 
     # 3. VERIFYING
     task.transition_to(TaskState.RUNNING)

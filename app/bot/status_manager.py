@@ -44,9 +44,9 @@ def format_status_message(task: TaskRecord) -> str:
     ]
 
     # 4. If the task requires user input, give clear guidance on what to do next.
-    # Secrets must never be entered in chat, so we direct the user to the companion app.
+    # Secrets must never be entered in chat, so we direct the user to Vault.
     if task.state == TaskState.NEEDS_INPUT and not task.metadata.get("chat_input_field"):
-        lines.append("👉 <i>Please open the Web Companion to provide the required input securely.</i>")
+        lines.append("🔐 <i>Open Vault to provide the required input securely.</i>")
 
     # 5. If an error occurred, show the failure explanation.
     if task.state == TaskState.FAILED and task.error:
@@ -65,7 +65,7 @@ def credential_input_keyboard(task: TaskRecord) -> Optional[InlineKeyboardMarkup
     domain = task.metadata.get("target_domain")
     if not url or not domain:
         return None
-    label = f"Enter {domain} credentials"
+    label = f"🔐 Enter {domain} credentials"
     # Telegram requires HTTPS for WebApp buttons; keep the local development fallback.
     button = (
         InlineKeyboardButton(text=label, web_app=WebAppInfo(url=url))
@@ -201,7 +201,7 @@ class StatusManager:
                     text = (
                         f"That password didn't work for {domain}. Update it here."
                         if task.metadata.get("credential_rejected") else
-                        f"I need your {credential} for {domain}. Save it to your vault here."
+                        f"I need your {credential} for {domain}. Save it to Vault here."
                     )
                     message = await self.bot.send_message(
                         chat_id=task.chat_id,
@@ -225,7 +225,7 @@ class StatusManager:
             if task.state == TaskState.FAILED and not self._failure_sent:
                 failure = (task.error or task.status_message).lower()
                 if "cancel" in failure:
-                    return  # The cancellation tool / Companion already acknowledges it.
+                    return  # The cancellation tool / Vault already acknowledges it.
                 text = (
                     "That request timed out. Please try again."
                     if "timed out" in failure or "timeout" in failure

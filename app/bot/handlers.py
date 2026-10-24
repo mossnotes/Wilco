@@ -89,7 +89,7 @@ async def _handle_text_message(message: Message) -> None:
             "⚠️ <b>Security Alert: Secret Intercepted!</b>\n\n"
             "For your security, passwords, API keys, and OTP seeds must <b>never</b> be sent in Telegram chat!\n"
             "Wilco deleted your message to prevent credential exposure.\n\n"
-            "👉 Ask me to open the <b>Wilco Companion App</b> to securely add credentials to your encrypted vault."
+            "🔐 Ask me to open <b>Vault</b> to securely save your credentials."
         )
         await message.answer(warning_text)
         return

@@ -50,7 +50,7 @@ def validate_telegram_identity(init_data: str) -> int:
         return telegram_id
     except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
         # Never include signed payloads, bot tokens, or parse errors in responses/logs.
-        raise HTTPException(status_code=401, detail="Reopen the Companion App from Telegram.") from None
+        raise HTTPException(status_code=401, detail="Reopen Vault from Telegram.") from None
 
 
 def create_session_token(

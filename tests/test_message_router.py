@@ -21,7 +21,7 @@ def use_structured_provider(monkeypatch):
     [
         ("Hello", MessageDecision(route="reply", reply="Hello!")),
         ("Check my deployments", MessageDecision(route="browser", reply="")),
-        ("Open my Companion App", MessageDecision(route="companion")),
+        ("Open my Vault", MessageDecision(route="companion")),
         ("How do I use Wilco?", MessageDecision(route="help")),
         ("Stop the current task", MessageDecision(route="cancel")),
     ],

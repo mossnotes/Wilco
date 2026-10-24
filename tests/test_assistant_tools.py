@@ -13,7 +13,7 @@ from app.tasks.registry import ActiveTaskRegistry
 from app.tasks.state import TaskRecord, TaskState
 
 
-def message(text="Open my Companion App", *, user_id=123, chat_id=123, chat_type="private"):
+def message(text="Open my Vault", *, user_id=123, chat_id=123, chat_type="private"):
     return SimpleNamespace(
         text=text, message_id=55, chat=SimpleNamespace(id=chat_id, type=chat_type),
         from_user=SimpleNamespace(id=user_id) if user_id else None,
@@ -51,6 +51,7 @@ async def test_companion_link_is_stable_and_never_mints_pairing_tokens(monkeypat
         await execute_assistant_tool("companion", msg)
     database.assert_not_called()
     button = msg.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.text == "🔐 Open Vault"
     assert button.web_app.url == "https://wilco.example/companion/accounts"
 
 

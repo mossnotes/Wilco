@@ -47,6 +47,7 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["ui"] = {
     "app_name": "Wilco",
+    "app_title": "Vault · Wilco",
     "accounts": "Accounts",
     "add_account": "Add account",
     "website": "Website",
@@ -68,10 +69,10 @@ templates.env.globals["ui"] = {
     "phone_hint": "Phone number only; keep the country calling code separate.",
     "delete_account_notice": "This deletes all saved details and browser sessions for this domain and stops your active browser tasks.",
     "save": "Save",
-    "save_to_vault": "Save to vault",
+    "save_to_vault": "🔐 Save to Vault",
     "saved": "Saved. Wilco will use this next time.",
     "saved_continuing": "Saved. Wilco is continuing.",
-    "auth_failed": "Reopen the Companion App from Telegram to sign in.",
+    "auth_failed": "Reopen Vault from Telegram to sign in.",
     "connecting": "Connecting…",
     "cancel": "Cancel",
     "close": "Close",
@@ -87,7 +88,7 @@ templates.env.globals["ui"] = {
     "connected": "Connected",
     "continue": "Continue",
     "sign_in": "Sign in",
-    "sign_in_instruction": "Open the Companion App from your private chat with Wilco.",
+    "sign_in_instruction": "Open Vault from your private chat with Wilco.",
     "save_failed": "Save failed",
     "remove_failed": "Remove failed",
     "submit_failed": "Submit failed",
@@ -95,7 +96,7 @@ templates.env.globals["ui"] = {
 }
 
 # Routers
-companion_router = APIRouter(prefix="/companion", tags=["companion"])
+companion_router = APIRouter(prefix="/companion", tags=["vault"])
 vault_api_router = APIRouter(prefix="/api/vault", tags=["vault"])
 tasks_api_router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -126,7 +127,7 @@ class ResolveInputRequest(BaseModel):
 
 
 # ---------------------------------------------------------
-# Web Companion HTML Routes
+# Vault HTML Routes
 # ---------------------------------------------------------
 
 @companion_router.post("/auth/telegram")
@@ -606,7 +607,7 @@ async def resolve_task_input(
                 task.metadata["resolved_input"] = req.user_input
         else:
             task.transition_to(
-                TaskState.FAILED, status_message="Task cancelled by user via companion app.", error="Cancelled by user",
+                TaskState.FAILED, status_message="Task cancelled by user via Vault.", error="Cancelled by user",
             )
         if pending and not pending.is_pending:
             raise HTTPException(status_code=409, detail="This credential request has expired")

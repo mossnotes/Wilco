@@ -25,7 +25,7 @@ ASSISTANT_TOOLS = (
         "Use for web research, current or account-specific information, inspecting "
         "a URL, and requested website actions, including logging into a website. "
         "Do not use for greetings, general explanations, help using Wilco, opening "
-        "Wilco's Companion App, stopping a Wilco task, or ambiguous requests. "
+        "Vault, stopping a Wilco task, or ambiguous requests. "
         "Supply request as a complete instruction resolved from the latest message "
         "and relevant conversation context. Never expand its scope or repeat older "
         "actions without a current request. The application binds the authenticated "
@@ -33,15 +33,15 @@ ASSISTANT_TOOLS = (
         "login and delivers the result. Calling it starts work, not proof of success."
     )),
     AssistantTool("open_companion", "companion", (
-        "Open Wilco's secure Companion App for the requesting user. Use when they "
-        "ask to get set up, link their Telegram account, open the Companion, or "
-        "add/manage saved credentials. Sends a persistent Companion button with Telegram sign-in "
+        "Open Vault, Wilco's secure credential store, for the requesting user. Use when they "
+        "ask to get set up, link their Telegram account, open Vault, or "
+        "add/manage saved credentials. Sends a persistent Vault button with Telegram sign-in "
         "directly in their private chat. Credential requests use separate one-time links. "
         "Never use just for a greeting, to log into an external website, or to ask "
         "for a one-time code. Never collect passwords, API keys, or authenticator "
         "seeds in chat. Takes no arguments: identity, destination and URL are bound "
         "by the application, never supplied by the model. Does not read, change, "
-        "or reveal stored credentials; the user manages them in the Companion."
+        "or reveal stored credentials; the user manages them in Vault."
     )),
     AssistantTool("show_help", "help", (
         "Send a short guide to using Wilco, its capabilities, secure credential "
@@ -72,27 +72,27 @@ async def open_companion(message: Message) -> str:
     """Deliver a stable Mini App address in the requester's private chat."""
     user_id = message.from_user.id if message.from_user else None
     if not user_id or message.chat.type != ChatType.PRIVATE or message.chat.id != user_id:
-        await message.answer("Message me privately to open your secure Companion App.", parse_mode=None)
-        return "Companion access requires the requesting user's private chat; no link was issued."
+        await message.answer("Message me privately to open your Vault.", parse_mode=None)
+        return "Vault access requires the requesting user's private chat; no link was issued."
 
     url = f"{settings.COMPANION_BASE_URL.rstrip('/')}/accounts"
 
     button = (
-        InlineKeyboardButton(text="Open Wilco Companion App", web_app=WebAppInfo(url=url))
-        if url.startswith("https://") else InlineKeyboardButton(text="Open Wilco Companion App", url=url)
+        InlineKeyboardButton(text="🔐 Open Vault", web_app=WebAppInfo(url=url))
+        if url.startswith("https://") else InlineKeyboardButton(text="🔐 Open Vault", url=url)
     )
     await message.answer(
-        "Here's your Companion App. Manage your saved credentials here anytime.",
+        "Here's your Vault. Manage your saved credentials here anytime.",
         parse_mode=None, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]]),
     )
-    return "A secure Companion access button was delivered privately to the requesting user."
+    return "A Vault access button was delivered privately to the requesting user."
 
 
 async def show_help(message: Message) -> str:
     text = (
         "I can answer questions, research the web, and carry out tasks on websites. Just tell me what you need.\n\n"
-        "Try 'check my Vercel deployments', 'open my Companion App', or 'stop the current task'.\n\n"
-        "Keep passwords and API keys in the Companion App. If a site needs a one-time code, "
+        "Try 'check my Vercel deployments', 'open my Vault', or 'stop the current task'.\n\n"
+        "Keep passwords and API keys in Vault. If a site needs a one-time code, "
         "I'll ask you to reply to a specific message and tell you where to find it."
     )
     await message.answer(text, parse_mode=None)

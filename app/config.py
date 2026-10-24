@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # Cryptographic Vault Settings
     VAULT_MASTER_KEY: str = ""
 
-    # Companion Web App Settings
+    # Vault Web App Settings (existing environment variable names are retained)
     COMPANION_BASE_URL: str = "http://localhost:8000/companion"
     COMPANION_TOKEN_TTL_MINUTES: int = 10
 
