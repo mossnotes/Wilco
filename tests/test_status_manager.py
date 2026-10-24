@@ -1,9 +1,9 @@
 import asyncio
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 import pytest
 
-from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest
 
 from app.tasks.state import TaskRecord, TaskState
 from app.bot.status_manager import StatusManager, format_status_message

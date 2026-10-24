@@ -187,7 +187,7 @@ class ConversationModel(Base):
 
 class TaskModel(Base):
     """
-    Persisted state machine record for Wilco tasks (satisfies Design Rule 4).
+    Persisted state and metadata for Wilco tasks.
     Bridges seamlessly to TaskRecord in memory.
     """
     __tablename__ = "tasks"

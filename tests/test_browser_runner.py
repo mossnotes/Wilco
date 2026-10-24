@@ -1,5 +1,4 @@
 import asyncio
-import asyncio
 from pathlib import Path
 import tempfile
 import pytest
@@ -35,11 +34,14 @@ def mock_status_manager() -> MagicMock:
 
 
 def test_is_valid_image_bytes():
-    """Verify image magic bytes validator (Step 4 Component 4)."""
+    """Accept supported image signatures and reject non-image payloads."""
     assert is_valid_image_bytes(None) is False
     assert is_valid_image_bytes(b"") is False
     assert is_valid_image_bytes(b"short") is False
     assert is_valid_image_bytes(b"random-non-image-data-string") is False
+    assert is_valid_image_bytes(b"fake-png-test-payload") is False
+    assert is_valid_image_bytes(b"test-image-payload") is False
+    assert is_valid_image_bytes(b"screenshot-payload") is False
 
     # Valid PNG header
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
@@ -237,7 +239,7 @@ async def test_run_browser_task_failure_handling(sample_task, mock_bot, mock_sta
 
 @pytest.mark.asyncio
 async def test_run_browser_task_timeout_enforcement(sample_task, mock_bot, mock_status_manager):
-    """Verify that execution timeout transitions task to FAILED (Step 4 Component 4)."""
+    """Verify that execution timeout transitions the task to FAILED."""
     mock_agent = MagicMock()
     mock_agent.run = AsyncMock(side_effect=TimeoutError("Wall-clock deadline reached"))
 
@@ -261,7 +263,7 @@ async def test_run_browser_task_timeout_enforcement(sample_task, mock_bot, mock_
 
 @pytest.mark.asyncio
 async def test_run_browser_task_corrupt_screenshot_rejection(sample_task, mock_bot, mock_status_manager):
-    """Verify that corrupt screenshot data is rejected and falls back to text (Step 4 Component 4)."""
+    """Verify that corrupt screenshot data is rejected and falls back to text."""
     mock_history = MagicMock()
     mock_history.final_result.return_value = "Result with corrupt screenshot."
 
@@ -289,7 +291,7 @@ async def test_run_browser_task_corrupt_screenshot_rejection(sample_task, mock_b
 
 @pytest.mark.asyncio
 async def test_run_browser_task_photo_send_error_fallback(sample_task, mock_bot, mock_status_manager):
-    """Verify that if bot.send_photo fails, it gracefully falls back to send_message (Step 4 Component 4)."""
+    """A failed photo upload must not repeat the text result already delivered."""
     mock_history = MagicMock()
     mock_history.final_result.return_value = "Result after send_photo failure."
 
@@ -322,7 +324,7 @@ async def test_run_browser_task_photo_send_error_fallback(sample_task, mock_bot,
 
 @pytest.mark.asyncio
 async def test_run_browser_task_temp_artifact_cleanup(sample_task, mock_bot, mock_status_manager):
-    """Verify that temporary screenshot files are cleaned up in finally block (Step 4 Component 4)."""
+    """Verify that temporary screenshots are cleaned up on completion."""
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
         valid_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
         tf.write(valid_png)

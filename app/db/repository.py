@@ -258,7 +258,7 @@ class BrowserProfileRepository:
 
 
 class TaskRepository:
-    """Persists task state machine records to guarantee resumability (Design Rule 4)."""
+    """Persist task status and metadata; running tasks are coordinated in memory."""
 
     @staticmethod
     async def save_task(session: AsyncSession, task_record: TaskRecord) -> TaskModel:

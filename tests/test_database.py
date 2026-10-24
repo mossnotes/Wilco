@@ -1,16 +1,11 @@
 from datetime import datetime, timedelta, timezone
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db.models import (
     Base,
-    BrowserProfile,
-    EncryptedCredential,
     IdentityToken,
-    TaskModel,
-    User,
 )
 from app.db.repository import (
     BrowserProfileRepository,

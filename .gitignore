@@ -17,16 +17,25 @@ AGENTS.md
 docs/
 
 # Environment variables & secrets
-.env
+.env*
+!.env.example
 *.env
 
 # Testing & cache
 .pytest_cache/
 .cache/
-output/playwright/
+output/
+scratch/
 .playwright-cli/
 
 # Databases
 *.db
+*.db-*
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
+
+# Operating system files
+.DS_Store
+Thumbs.db

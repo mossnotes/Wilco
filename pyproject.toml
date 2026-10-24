@@ -1,8 +1,9 @@
 [project]
 name = "wilco"
 version = "0.1.0"
-description = "Add your description here"
+description = "A self-hosted Telegram assistant with browser automation and an encrypted credential vault."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
     "aiogram>=3.31.0",

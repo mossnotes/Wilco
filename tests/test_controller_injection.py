@@ -1,7 +1,6 @@
 """Smart Vault action coverage (the former injection tools are deliberately retired)."""
 
 import asyncio
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlsplit

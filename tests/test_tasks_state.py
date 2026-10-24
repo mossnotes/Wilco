@@ -81,7 +81,7 @@ def test_invalid_transitions_raise_error():
     task = TaskRecord(user_id=1, chat_id=1, prompt="Test Task")
 
     # Direct jump from RUNNING to DONE (bypassing verification) is not allowed
-    # Note: Design Rule 3 mandates "Done" is claimed only after a verifier checks page state
+    # A task must pass through verification before it can be marked done.
     with pytest.raises(InvalidTaskStateTransitionError):
         task.transition_to(TaskState.DONE)
 

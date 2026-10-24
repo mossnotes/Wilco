@@ -77,7 +77,7 @@ async def _handle_text_message(message: Message) -> None:
     chat_id = message.chat.id
     user_id = message.from_user.id if message.from_user else 0
 
-    # 1. Pasted Secret Interceptor (Design Rule 1)
+    # Delete pasted credentials before processing the message.
     if contains_sensitive_data(text):
         logger.warning("Pasted secret detected from user %s in chat %s! Intercepting and deleting.", user_id, chat_id)
         try:
@@ -228,7 +228,7 @@ async def _handle_text_message(message: Message) -> None:
         status_message="Task received. Initializing worker...",
     )
 
-    # Persist initial task in database (Design Rule 4)
+    # Persist the initial task before starting execution.
     try:
         async with async_session_factory() as session:
             await TaskRepository.save_task(session, task)

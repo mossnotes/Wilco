@@ -19,7 +19,7 @@ from app.security.browser_access import profile_revision
 from app.companion.auth import SESSION_COOKIE_NAME, validate_telegram_identity
 from app.config import settings
 from app.db.engine import async_session_factory, init_db
-from app.db.repository import BrowserProfileRepository, CredentialRepository, IdentityTokenRepository, TaskRepository, UserRepository
+from app.db.repository import BrowserProfileRepository, CredentialRepository, IdentityTokenRepository, UserRepository
 from app.security.vault import decrypt_secret, encrypt_secret
 from app.tasks.registry import task_registry
 from app.tasks.state import TaskRecord, TaskState

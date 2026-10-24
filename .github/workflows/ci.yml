@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      ANONYMIZED_TELEMETRY: "false"
+      DATABASE_URL: "sqlite+aiosqlite:///:memory:"
+      BOT_MODE: webhook
+      TELEGRAM_BOT_TOKEN: ""
+      VAULT_MASTER_KEY: ""
+      GEMINI_API_KEY: ""
+      GOOGLE_API_KEY: ""
+      OPENAI_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.19"
+          python-version: "3.14"
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --locked
+      - name: Run tests
+        run: uv run --no-sync pytest -q

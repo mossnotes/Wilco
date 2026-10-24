@@ -12,7 +12,7 @@ class InvalidTaskStateTransitionError(Exception):
 
 class TaskState(str, Enum):
     """
-    State machine states for Wilco tasks (Design Rule 4):
+    State machine states for Wilco tasks:
     - RUNNING: Task is actively being executed by the browser agent.
     - NEEDS_INPUT: Task is paused waiting for user input or credentials.
     - VERIFYING: Task actions are complete; verifier is validating page state against goal.

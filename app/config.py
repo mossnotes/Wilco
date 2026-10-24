@@ -4,7 +4,7 @@ from typing import Any, Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Step 4 Security Hardening: Ensure telemetry is disabled before any browser_use modules load
+# Set the default before browser-use is imported.
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
 
 
@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # Cryptographic Vault Settings
     VAULT_MASTER_KEY: str = ""
 
-    # Vault Web App Settings (existing environment variable names are retained)
+    # Vault Web App Settings
     COMPANION_BASE_URL: str = "http://localhost:8000/companion"
 
     # Browser Task Execution
@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     BROWSERBASE_API_KEY: str = ""
     BROWSERBASE_PROJECT_ID: str = ""
 
-    # Privacy & Telemetry Settings (Step 4 Security Hardening)
+    # Privacy & Telemetry Settings
     ANONYMIZED_TELEMETRY: bool = False
 
     @field_validator("ANONYMIZED_TELEMETRY", mode="before")

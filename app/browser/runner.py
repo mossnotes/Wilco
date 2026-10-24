@@ -41,14 +41,12 @@ def is_valid_image_bytes(data: Optional[bytes]) -> bool:
     is_png = data.startswith(b"\x89PNG\r\n\x1a\n")
     is_jpeg = data.startswith(b"\xff\xd8\xff")
     is_webp = data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP"
-    # Allow mock test payloads
-    is_test_mock = data.startswith(b"fake-png") or data.startswith(b"test-image") or data.startswith(b"screenshot")
-    return is_png or is_jpeg or is_webp or is_test_mock
+    return is_png or is_jpeg or is_webp
 
 
 async def run_browser_task(
     task: TaskRecord,
-    status_manager: Any,
+    status_manager: "StatusManager",
     bot: Bot,
     max_steps: int = 25,
 ) -> None:
@@ -106,7 +104,7 @@ async def run_browser_task(
                     if not goal:
                         goal = f"Executing step {step_num}..."
 
-                    # Clean up multiple spaces or newlines and sanitize before status card update (Step 5.5)
+                    # Normalize whitespace and redact secrets before updating progress.
                     cleaned_goal = " ".join(str(goal).split())
                     safe_goal = sanitize_log(cleaned_goal)
                     task.update_status(f"Step {step_num}: {safe_goal}")
@@ -144,7 +142,7 @@ async def run_browser_task(
                 # 4. Capture screenshot proof using resilient fallback strategies
                 screenshot_bytes: Optional[bytes] = None
 
-                # Register all intermediate screenshot paths for thorough disk cleanup (Step 5.5)
+                # Track intermediate screenshots for cleanup on every exit path.
                 if hasattr(history, "screenshot_paths"):
                     try:
                         paths = history.screenshot_paths(return_none_if_not_screenshot=False)
@@ -269,7 +267,7 @@ async def run_browser_task(
                 await session.commit()
         except Exception:
             logger.warning("Failed to persist final task state for %s", task.task_id)
-        # Automatic temporary disk artifact cleanup for ALL screenshots (Step 5.5)
+        # Remove temporary screenshots on every exit path.
         for p in temp_cleanup_paths:
             try:
                 if p.exists() and p.is_file():
