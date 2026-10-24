@@ -13,13 +13,14 @@
     function initializeTelegram() {
         const app = window.Telegram?.WebApp;
         if (!app) return;
+        const background = getComputedStyle(document.documentElement).getPropertyValue("--background").trim();
         app.ready();
         app.expand();
         if (app.isVersionAtLeast("6.1")) {
-            app.setHeaderColor("#ffffff");
-            app.setBackgroundColor("#ffffff");
+            app.setHeaderColor(background);
+            app.setBackgroundColor(background);
         }
-        if (app.isVersionAtLeast("7.10")) app.setBottomBarColor("#ffffff");
+        if (app.isVersionAtLeast("7.10")) app.setBottomBarColor(background);
     }
 
     const sdk = document.getElementById("telegram-sdk");
