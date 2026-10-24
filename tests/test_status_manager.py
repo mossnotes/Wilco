@@ -1,5 +1,6 @@
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import pytest
 
@@ -160,11 +161,15 @@ async def test_status_manager_handles_message_not_modified():
 
 
 @pytest.mark.parametrize("base_url, is_webapp", [("https://wilco.example", True), ("http://localhost:8000", False)])
-async def test_debug_credential_button_flushes_immediately_without_countdown(base_url, is_webapp):
+async def test_debug_credential_button_flushes_immediately_without_countdown(base_url, is_webapp, monkeypatch):
+    # A fresh runner can have a monotonic clock below the throttle interval.
+    # Replace this module's clock without changing asyncio's own clock.
+    monkeypatch.setattr("app.bot.status_manager.time", SimpleNamespace(monotonic=lambda: 0.0))
     bot = AsyncMock()
     manager = StatusManager(bot, min_interval=60)
     task = TaskRecord(user_id=1, chat_id=1, prompt="Login <example>", message_id=42)
     await manager.update(task)
+    assert bot.edit_message_text.await_count == 1
     task.transition_to(TaskState.NEEDS_INPUT, status_message="Credentials required")
     task.metadata.update({
         "target_domain": "example.com", "companion_url": f"{base_url}/companion/link?token=opaque",

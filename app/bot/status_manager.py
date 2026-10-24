@@ -106,8 +106,8 @@ class StatusManager:
         self._input_url: Optional[str] = None
         self._failure_sent = False
 
-        # Monotonic timestamp of when the last edit request was completed.
-        self._last_edit_time: float = 0.0
+        # No cooldown applies until the first message or edit has completed.
+        self._last_edit_time: Optional[float] = None
 
         # Stores the latest unrendered text waiting to be sent when the cooldown expires.
         self._pending_text: Optional[str] = None
@@ -167,7 +167,10 @@ class StatusManager:
                 self._flush_task = None
 
             now = time.monotonic()
-            elapsed_since_last_edit = now - self._last_edit_time
+            elapsed_since_last_edit = (
+                self.min_interval if self._last_edit_time is None
+                else now - self._last_edit_time
+            )
 
             if should_force or elapsed_since_last_edit >= self.min_interval:
                 # We are outside the rate-limit window or forced: send the edit immediately.
